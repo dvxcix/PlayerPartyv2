@@ -14,8 +14,9 @@ import {
   Brush,
 } from "recharts";
 import { BOOK_COLORS } from "@/lib/odds";
-import type { PlayerPick } from "./PlayersPanel";
+import { getIdForName, buildHeadshotCandidates } from "@/lib/headshots";
 
+type Player = { player_id: string; full_name: string };
 type MarketKey = "batter_home_runs" | "batter_first_home_run";
 type OutcomeKey = "over" | "under" | "yes" | "no";
 
@@ -46,99 +47,6 @@ function withinThreshold(outcome: OutcomeKey, american: number) {
   return true;
 }
 
-// ----- Marker helpers -----
-type MarkerStyle = "dot" | "initials" | "logo+initials";
-
-function initials(name: string) {
-  const parts = name.trim().split(/\s+/);
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-}
-
-function makeMarkerRenderer(
-  seriesKey: string,
-  player: PlayerPick,
-  marker: MarkerStyle,
-  color: string
-) {
-  // Custom SVG renderer for <Line dot={...}> that closes over the series context
-  return function DotRenderer(props: any) {
-    const { cx, cy, payload } = props;
-    if (cx == null || cy == null) return null;
-
-    if (marker === "dot") {
-      return (
-        <circle cx={cx} cy={cy} r={2.5} fill={color} fillOpacity={0.95} />
-      );
-    }
-
-    const label = initials(player.full_name);
-    const size = 14; // marker size
-    const half = size / 2;
-
-    if (marker === "logo+initials") {
-      const logo = player.team_abbr ? `/logos/${player.team_abbr}.png` : null;
-      return (
-        <g>
-          {/* logo circle */}
-          {logo ? (
-            <>
-              <defs>
-                <clipPath id={`clip-${seriesKey}-${cx}-${cy}`}>
-                  <circle cx={cx} cy={cy} r={half} />
-                </clipPath>
-              </defs>
-              {/* Embedded raster logo */}
-              <image
-                href={logo}
-                x={cx - half}
-                y={cy - half}
-                width={size}
-                height={size}
-                clipPath={`url(#clip-${seriesKey}-${cx}-${cy})`}
-                preserveAspectRatio="xMidYMid slice"
-              />
-              <circle cx={cx} cy={cy} r={half} stroke={color} strokeWidth={1.5} fill="none" />
-            </>
-          ) : (
-            <circle cx={cx} cy={cy} r={half} fill="#fff" stroke={color} strokeWidth={1.5} />
-          )}
-          {/* initials overlay */}
-          <text
-            x={cx}
-            y={cy + 0.5}
-            textAnchor="middle"
-            fontSize="8"
-            fontWeight={700}
-            fill="#111"
-            pointerEvents="none"
-          >
-            {label}
-          </text>
-        </g>
-      );
-    }
-
-    // initials only
-    return (
-      <g>
-        <circle cx={cx} cy={cy} r={half} fill="#fff" stroke={color} strokeWidth={1.5} />
-        <text
-          x={cx}
-          y={cy + 0.5}
-          textAnchor="middle"
-          fontSize="8"
-          fontWeight={700}
-          fill="#111"
-          pointerEvents="none"
-        >
-          {label}
-        </text>
-      </g>
-    );
-  };
-}
-
 export function OddsChart({
   gameIds,
   players,
@@ -147,13 +55,16 @@ export function OddsChart({
   refreshTick = 0,
 }: {
   gameIds: string[];
-  players: PlayerPick[];
+  players: Player[];
   marketKey: MarketKey;
   outcome: OutcomeKey;
   refreshTick?: number;
 }) {
   const [series, setSeries] = useState<Record<string, RawRow[]>>({});
   const [hoverKey, setHoverKey] = useState<string | null>(null);
+
+  // Map of player_id -> resolved headshot src (headshots / headshots2 / _default)
+  const [headshotSrc, setHeadshotSrc] = useState<Record<string, string>>({});
 
   useEffect(() => setHoverKey(null), [
     players.map((p) => p.player_id).join(","),
@@ -162,7 +73,7 @@ export function OddsChart({
     outcome,
   ]);
 
-  // fetch + merge
+  // fetch + merge odds
   useEffect(() => {
     let aborted = false;
     (async () => {
@@ -209,7 +120,44 @@ export function OddsChart({
     refreshTick,
   ]);
 
-  // merge by timestamp
+  // resolve headshot sources for selected players
+  useEffect(() => {
+    let cancelled = false;
+
+    async function resolveOne(fullName: string): Promise<string> {
+      try {
+        const id = await getIdForName(fullName);
+        const candidates = buildHeadshotCandidates(id);
+        // Probe candidates in order with HEAD; pick the first that exists.
+        for (const url of candidates) {
+          try {
+            const res = await fetch(url, { method: "HEAD", cache: "force-cache" });
+            if (res.ok) return url;
+          } catch {
+            // try next
+          }
+        }
+        return "/_default.avif";
+      } catch {
+        return "/_default.avif";
+      }
+    }
+
+    (async () => {
+      const next: Record<string, string> = {};
+      for (const p of players) {
+        next[p.player_id] = await resolveOne(p.full_name);
+        if (cancelled) return;
+      }
+      if (!cancelled) setHeadshotSrc(next);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [players.map((p) => p.player_id + "|" + p.full_name).join(",")]);
+
+  // merge by timestamp to recharts rows
   const data: Point[] = useMemo(() => {
     const timeMap: Record<string, Point> = {};
     for (const p of players) {
@@ -229,9 +177,6 @@ export function OddsChart({
   const [showMGM, setShowMGM] = useState(true);
   const [smooth, setSmooth] = useState(false);
 
-  // NEW: marker style toggle
-  const [markerStyle, setMarkerStyle] = useState<MarkerStyle>("logo+initials");
-
   // zoom/pan domain
   const tsMin = data.length ? data[0].ts : undefined;
   const tsMax = data.length ? data[data.length - 1].ts : undefined;
@@ -248,6 +193,40 @@ export function OddsChart({
   const hasData = data.length > 0;
 
   const fadeIfNotHovered = (key: string) => (hoverKey && hoverKey !== key ? 0.35 : 1);
+
+  // ----- headshot marker renderer -----
+  function makeHeadshotDot(seriesKey: string, playerId: string, strokeColor: string) {
+    const src = headshotSrc[playerId] ?? "/_default.avif";
+    const size = 16; // marker size (px)
+    const r = size / 2;
+
+    return function DotRenderer(props: any) {
+      const { cx, cy } = props;
+      if (cx == null || cy == null) return null;
+
+      const clipId = `clip-${seriesKey}-${Math.round(cx)}-${Math.round(cy)}`;
+
+      return (
+        <g>
+          <defs>
+            <clipPath id={clipId}>
+              <circle cx={cx} cy={cy} r={r} />
+            </clipPath>
+          </defs>
+          <image
+            href={src}
+            x={cx - r}
+            y={cy - r}
+            width={size}
+            height={size}
+            clipPath={`url(#${clipId})`}
+            preserveAspectRatio="xMidYMid slice"
+          />
+          <circle cx={cx} cy={cy} r={r} fill="none" stroke={strokeColor} strokeWidth={1.6} />
+        </g>
+      );
+    };
+  }
 
   return (
     <div className="w-full bg-white rounded-2xl border shadow-sm">
@@ -278,29 +257,6 @@ export function OddsChart({
             <Image src="/miscimg/MGM.png" alt="BetMGM" width={16} height={16} />
             <span>BetMGM</span>
           </label>
-        </div>
-
-        {/* Marker style */}
-        <div className="flex items-center gap-1 pl-2">
-          <span className="text-gray-500">Markers:</span>
-          <button
-            className={`px-2 py-1 border rounded ${markerStyle === "dot" ? "bg-blue-50 border-blue-300" : "hover:bg-gray-50"}`}
-            onClick={() => setMarkerStyle("dot")}
-          >
-            Dot
-          </button>
-          <button
-            className={`px-2 py-1 border rounded ${markerStyle === "initials" ? "bg-blue-50 border-blue-300" : "hover:bg-gray-50"}`}
-            onClick={() => setMarkerStyle("initials")}
-          >
-            Initials
-          </button>
-          <button
-            className={`px-2 py-1 border rounded ${markerStyle === "logo+initials" ? "bg-blue-50 border-blue-300" : "hover:bg-gray-50"}`}
-            onClick={() => setMarkerStyle("logo+initials")}
-          >
-            Logo+Initials
-          </button>
         </div>
 
         <div className="ml-auto flex items-center gap-2">
@@ -343,12 +299,10 @@ export function OddsChart({
                   const ts = typeof label === "number" ? label : Number(label);
                   const row = data.find((d) => d.ts === ts);
 
-                  let item = null as any;
-                  if (row && hoverKey && typeof row[hoverKey] === "number") {
-                    item = { dataKey: hoverKey, value: row[hoverKey] } as any;
-                  } else {
-                    item = payload.find((p) => typeof p.value === "number");
-                  }
+                  // Prefer exact hovered series; fallback to any numeric
+                  let item = hoverKey && row && typeof row[hoverKey] === "number"
+                    ? { dataKey: hoverKey, value: row[hoverKey] } as any
+                    : payload.find((p) => typeof p.value === "number");
                   if (!item) return null;
 
                   const [playerId, bookmaker] = String(item.dataKey).split("__");
@@ -379,12 +333,12 @@ export function OddsChart({
                 }}
               />
 
-              {/* Lines with custom markers; hover fade for non-focused series */}
+              {/* Lines with HEADSHOT markers; non-hovered series fade */}
               {players.map((p) => {
                 const fdKey = `${p.player_id}__fanduel`;
                 const mgmKey = `${p.player_id}__betmgm`;
-                const fdDot = makeMarkerRenderer(fdKey, p, markerStyle, BOOK_COLORS.fanduel);
-                const mgmDot = makeMarkerRenderer(mgmKey, p, markerStyle, BOOK_COLORS.betmgm);
+                const fdDot = makeHeadshotDot(fdKey, p.player_id, BOOK_COLORS.fanduel);
+                const mgmDot = makeHeadshotDot(mgmKey, p.player_id, BOOK_COLORS.betmgm);
 
                 return (
                   <g key={p.player_id}>
@@ -394,7 +348,7 @@ export function OddsChart({
                         connectNulls
                         dataKey={fdKey}
                         dot={fdDot as any}
-                        activeDot={{ r: 6, onMouseOver: () => setHoverKey(fdKey), onMouseOut: () => setHoverKey(null) } as any}
+                        activeDot={{ r: 8, onMouseOver: () => setHoverKey(fdKey), onMouseOut: () => setHoverKey(null) } as any}
                         strokeWidth={2.3}
                         stroke={BOOK_COLORS.fanduel}
                         strokeOpacity={fadeIfNotHovered(fdKey)}
@@ -409,7 +363,7 @@ export function OddsChart({
                         connectNulls
                         dataKey={mgmKey}
                         dot={mgmDot as any}
-                        activeDot={{ r: 6, onMouseOver: () => setHoverKey(mgmKey), onMouseOut: () => setHoverKey(null) } as any}
+                        activeDot={{ r: 8, onMouseOver: () => setHoverKey(mgmKey), onMouseOut: () => setHoverKey(null) } as any}
                         strokeWidth={2.3}
                         stroke={BOOK_COLORS.betmgm}
                         strokeOpacity={fadeIfNotHovered(mgmKey)}
