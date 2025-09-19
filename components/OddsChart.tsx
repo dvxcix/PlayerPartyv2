@@ -8,7 +8,6 @@ import {
   XAxis,
   YAxis,
   Tooltip,
-  Legend,
   ResponsiveContainer,
   CartesianGrid,
   Brush,
@@ -28,7 +27,8 @@ const toImpliedPct = (american: number) =>
 
 // (+) = Over/Yes, (-) = Under/No (UI-only)
 function matchesOutcome(marketKey: MarketKey, outcome: OutcomeKey, american: number) {
-  if (marketKey === "batter_home_runs") return outcome === "over" ? american >= 0 : outcome === "under" ? american < 0 : true;
+  if (marketKey === "batter_home_runs")
+    return outcome === "over" ? american >= 0 : outcome === "under" ? american < 0 : true;
   return outcome === "yes" ? american >= 0 : outcome === "no" ? american < 0 : true;
 }
 
@@ -45,7 +45,12 @@ export function OddsChart({
 }) {
   const [series, setSeries] = useState<Record<string, RawRow[]>>({});
 
-  // Fetch: for each player, if multiple gameIds selected, fetch each game separately and merge rows.
+  // Which series (playerId__book) is currently hovered
+  const [hoverKey, setHoverKey] = useState<string | null>(null);
+
+  useEffect(() => setHoverKey(null), [players.map(p => p.player_id).join(","), gameIds.join(","), marketKey, outcome]);
+
+  // Fetch rows (multi-game merge)
   useEffect(() => {
     let aborted = false;
     (async () => {
@@ -54,15 +59,18 @@ export function OddsChart({
         players.map(async (p) => {
           let rows: RawRow[] = [];
           if (gameIds.length === 0) {
-            // no game filter — pull all and filter only by outcome
-            const res = await fetch(`/api/players/${p.player_id}/odds?market_key=${marketKey}`, { cache: "no-store" });
+            const res = await fetch(`/api/players/${p.player_id}/odds?market_key=${marketKey}`, {
+              cache: "no-store",
+            });
             const json = await res.json();
             if (json.ok) rows = json.data as RawRow[];
           } else {
-            // fetch per game and merge
             const parts = await Promise.all(
               gameIds.map(async (gid) => {
-                const res = await fetch(`/api/players/${p.player_id}/odds?market_key=${marketKey}&game_id=${gid}`, { cache: "no-store" });
+                const res = await fetch(
+                  `/api/players/${p.player_id}/odds?market_key=${marketKey}&game_id=${gid}`,
+                  { cache: "no-store" }
+                );
                 const json = await res.json();
                 return json.ok ? (json.data as RawRow[]) : [];
               })
@@ -79,7 +87,7 @@ export function OddsChart({
     };
   }, [players.map((p) => p.player_id).join(","), marketKey, outcome, gameIds.join(",")]);
 
-  // Merge timelines so all selected players/books line up over time
+  // Merge by timestamp
   const data: Point[] = useMemo(() => {
     const timeMap: Record<string, Point> = {};
     for (const p of players) {
@@ -87,7 +95,7 @@ export function OddsChart({
       for (const r of rows) {
         const t = r.captured_at;
         if (!timeMap[t]) timeMap[t] = { captured_at: t, ts: Date.parse(t) };
-        const key = `${p.player_id}__${r.bookmaker}`; // e.g., "123__fanduel"
+        const key = `${p.player_id}__${r.bookmaker}`;
         timeMap[t][key] = r.american_odds;
       }
     }
@@ -96,8 +104,8 @@ export function OddsChart({
     return arr;
   }, [series, players.map((p) => p.player_id).join(",")]);
 
-  // Interactivity (zoom/pan/brush/dots/smooth/book toggles/export/resize)
-  const [height, setHeight] = useState(520);
+  // Interactivity controls (zoom/pan/brush/etc.)
+  const [height, setHeight] = useState(620); // give the chart more default height
   const [showFD, setShowFD] = useState(true);
   const [showMGM, setShowMGM] = useState(true);
   const [showDots, setShowDots] = useState(true);
@@ -107,32 +115,38 @@ export function OddsChart({
     return players.flatMap((p) => {
       const lines: JSX.Element[] = [];
       if (showFD) {
+        const key = `${p.player_id}__fanduel`;
         lines.push(
           <Line
-            key={`${p.player_id}__fanduel`}
+            key={key}
             type={smooth ? "monotone" : "linear"}
             connectNulls
-            dataKey={`${p.player_id}__fanduel`}
+            dataKey={key}
             name={`${p.full_name} — FanDuel`}
             dot={showDots ? { r: 2.5 } : false}
             strokeWidth={2.25}
             stroke={BOOK_COLORS.fanduel}
             isAnimationActive={false}
+            onMouseOver={() => setHoverKey(key)}
+            onMouseOut={() => setHoverKey(null)}
           />
         );
       }
       if (showMGM) {
+        const key = `${p.player_id}__betmgm`;
         lines.push(
           <Line
-            key={`${p.player_id}__betmgm`}
+            key={key}
             type={smooth ? "monotone" : "linear"}
             connectNulls
-            dataKey={`${p.player_id}__betmgm`}
+            dataKey={key}
             name={`${p.full_name} — BetMGM`}
             dot={showDots ? { r: 2.5 } : false}
             strokeWidth={2.25}
             stroke={BOOK_COLORS.betmgm}
             isAnimationActive={false}
+            onMouseOver={() => setHoverKey(key)}
+            onMouseOut={() => setHoverKey(null)}
           />
         );
       }
@@ -140,7 +154,7 @@ export function OddsChart({
     });
   }, [players, showFD, showMGM, showDots, smooth]);
 
-  // Domain (zoom/pan)
+  // Domain + zoom/pan
   const tsMin = data.length ? data[0].ts : undefined;
   const tsMax = data.length ? data[data.length - 1].ts : undefined;
   const [xDomain, setXDomain] = useState<[number, number] | undefined>(undefined);
@@ -206,9 +220,9 @@ export function OddsChart({
   const playersById = useMemo(() => Object.fromEntries(players.map((p) => [p.player_id, p])), [players]);
   const hasData = data.length > 0;
 
+  // ——— Toolbar (kept slim; chart gets the space) ———
   return (
     <div className="w-full bg-white rounded-2xl border shadow-sm">
-      {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2 p-3 border-b text-sm">
         <div className="flex items-center gap-2">
           <button className="px-2 py-1 border rounded hover:bg-gray-50" onClick={zoomIn} aria-label="Zoom in">＋</button>
@@ -218,7 +232,6 @@ export function OddsChart({
 
         <div className="flex items-center gap-1 pl-2">
           <span className="text-gray-500">Preset:</span>
-          <button className="px-2 py-1 border rounded hover:bg-gray-50" onClick={() => applyPreset(3)}>3h</button>
           <button className="px-2 py-1 border rounded hover:bg-gray-50" onClick={() => applyPreset(6)}>6h</button>
           <button className="px-2 py-1 border rounded hover:bg-gray-50" onClick={() => applyPreset(12)}>12h</button>
           <button className="px-2 py-1 border rounded hover:bg-gray-50" onClick={() => applyPreset(24)}>24h</button>
@@ -245,16 +258,24 @@ export function OddsChart({
         </div>
 
         <div className="ml-auto flex items-center gap-2">
-          <button className="px-2 py-1 border rounded hover:bg-gray-50" onClick={exportCSV}>Export CSV</button>
+          <button className="px-2 py-1 border rounded hover:bg-gray-50" onClick={exportCSV}>
+            Export CSV
+          </button>
           <div className="flex items-center gap-2">
             <span className="text-gray-500">Height</span>
-            <input type="range" min={360} max={820} value={height} onChange={(e) => setHeight(Number(e.target.value))} />
+            <input
+              type="range"
+              min={360}
+              max={900}
+              value={height}
+              onChange={(e) => setHeight(Number(e.target.value))}
+            />
             <span className="tabular-nums w-12 text-right">{height}px</span>
           </div>
         </div>
       </div>
 
-      {/* Chart */}
+      {/* Chart (no Legend; hover is line-specific) */}
       <div className="w-full" style={{ height }} onWheel={onWheel}>
         {!hasData ? (
           <div className="h-full grid place-items-center text-sm text-gray-500">
@@ -264,7 +285,7 @@ export function OddsChart({
           <ResponsiveContainer width="100%" height="100%">
             <LineChart
               data={data}
-              margin={{ top: 8, right: 16, left: 12, bottom: 16 }}
+              margin={{ top: 8, right: 16, left: 12, bottom: 8 }}
               onMouseDown={handleMouseDown}
               onMouseMove={handleMouseMove}
               onMouseUp={handleMouseUp}
@@ -275,26 +296,102 @@ export function OddsChart({
                 type="number"
                 domain={xDomain ?? ["auto", "auto"]}
                 scale="time"
-                tickFormatter={(ts) => new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                tickFormatter={(ts) =>
+                  new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                }
                 minTickGap={48}
               />
               <YAxis tickFormatter={(v) => (Number(v) > 0 ? `+${v}` : `${v}`)} width={56} />
               <Tooltip
-                content={
-                  <CustomTooltip
-                    playersById={playersById}
-                  />
-                }
                 isAnimationActive={false}
-                labelFormatter={(ts: number) => ts}
+                // Only show tooltip when we know which series is hovered
+                content={({ active, payload, label }) => {
+                  if (!active || !hoverKey || !payload?.length) return null;
+                  // Find the one matching the hovered series key
+                  const item = payload.find((p) => String(p.dataKey) === hoverKey && typeof p.value === "number");
+                  if (!item) return null;
+
+                  const [playerId, bookmaker] = String(item.dataKey).split("__");
+                  const american = item.value as number;
+                  const prob = toImpliedPct(american);
+                  const d = typeof label === "number" ? new Date(label) : new Date(label ?? "");
+                  return (
+                    <div className="rounded-md border bg-white px-3 py-2 shadow-sm text-sm">
+                      <div className="mb-1 font-medium">
+                        {d.toLocaleString([], {
+                          month: "short",
+                          day: "2-digit",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </div>
+                      <div className="flex items-center justify-between gap-4">
+                        <span className="inline-flex items-center gap-2">
+                          <span
+                            className="inline-block h-2 w-2 rounded-full"
+                            style={{
+                              background:
+                                bookmaker === "fanduel" ? BOOK_COLORS.fanduel : BOOK_COLORS.betmgm,
+                            }}
+                          />
+                          {players.find((p) => p.player_id === playerId)?.full_name ?? playerId} —{" "}
+                          {bookmaker.toUpperCase()}
+                        </span>
+                        <span className="tabular-nums">{AMERICAN(american)}</span>
+                        <span className="text-gray-500 tabular-nums">
+                          {(prob * 100).toFixed(1)}%
+                        </span>
+                      </div>
+                    </div>
+                  );
+                }}
               />
-              <Legend wrapperStyle={{ paddingTop: 8 }} />
-              {seriesLines}
+              {/* Lines (each line sets hoverKey on mouse over) */}
+              {players.flatMap((p) => {
+                const lines: JSX.Element[] = [];
+                if (showFD) {
+                  const key = `${p.player_id}__fanduel`;
+                  lines.push(
+                    <Line
+                      key={key}
+                      type={smooth ? "monotone" : "linear"}
+                      connectNulls
+                      dataKey={key}
+                      dot={showDots ? { r: 2.5 } : false}
+                      strokeWidth={2.25}
+                      stroke={BOOK_COLORS.fanduel}
+                      isAnimationActive={false}
+                      onMouseOver={() => setHoverKey(key)}
+                      onMouseOut={() => setHoverKey(null)}
+                    />
+                  );
+                }
+                if (showMGM) {
+                  const key = `${p.player_id}__betmgm`;
+                  lines.push(
+                    <Line
+                      key={key}
+                      type={smooth ? "monotone" : "linear"}
+                      connectNulls
+                      dataKey={key}
+                      dot={showDots ? { r: 2.5 } : false}
+                      strokeWidth={2.25}
+                      stroke={BOOK_COLORS.betmgm}
+                      isAnimationActive={false}
+                      onMouseOver={() => setHoverKey(key)}
+                      onMouseOut={() => setHoverKey(null)}
+                    />
+                  );
+                }
+                return lines;
+              })}
               <Brush
                 dataKey="ts"
                 height={22}
                 travellerWidth={8}
-                tickFormatter={(ts) => new Date(ts as number).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                tickFormatter={(ts) =>
+                  new Date(ts as number).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                }
                 onChange={(range) => {
                   if (range?.startIndex != null && range?.endIndex != null) {
                     const si = Math.max(0, range.startIndex);
@@ -306,58 +403,6 @@ export function OddsChart({
             </LineChart>
           </ResponsiveContainer>
         )}
-      </div>
-    </div>
-  );
-}
-
-// custom tooltip
-function CustomTooltip({
-  active,
-  payload,
-  label,
-  playersById,
-}: {
-  active?: boolean;
-  payload?: any[];
-  label?: string | number;
-  playersById: Record<string, Player>;
-}) {
-  if (!active || !payload?.length) return null;
-
-  const rows = payload
-    .filter((p) => p && typeof p.value === "number")
-    .map((p) => {
-      const [playerId, bookmaker] = String(p.dataKey).split("__");
-      const player = playersById[playerId];
-      const american = p.value as number;
-      const prob = toImpliedPct(american);
-      return {
-        color: p.stroke,
-        name: `${player?.full_name ?? playerId} — ${bookmaker.toUpperCase()}`,
-        american: AMERICAN(american),
-        prob: `${(prob * 100).toFixed(1)}%`,
-      };
-    })
-    .sort((a, b) => a.name.localeCompare(b.name));
-
-  const d = typeof label === "number" ? new Date(label) : new Date(label ?? "");
-  return (
-    <div className="rounded-md border bg-white px-3 py-2 shadow-sm text-sm">
-      <div className="mb-1 font-medium">
-        {d.toLocaleString([], { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
-      </div>
-      <div className="space-y-1">
-        {rows.map((r, i) => (
-          <div key={i} className="flex items-center justify-between gap-4">
-            <span className="inline-flex items-center gap-2">
-              <span className="inline-block h-2 w-2 rounded-full" style={{ background: r.color }} />
-              {r.name}
-            </span>
-            <span className="tabular-nums">{r.american}</span>
-            <span className="text-gray-500 tabular-nums">{r.prob}</span>
-          </div>
-        ))}
       </div>
     </div>
   );
