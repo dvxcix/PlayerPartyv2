@@ -19,14 +19,13 @@ type MarketKey = "batter_home_runs" | "batter_first_home_run";
 type OutcomeKey = "over" | "under" | "yes" | "no";
 
 type RawRow = {
-  captured_at: string;        // ISO string
+  captured_at: string; // ISO
   american_odds: number;
   bookmaker: "fanduel" | "betmgm" | string;
 };
 
 type Point = { captured_at: string; ts: number; [seriesKey: string]: number | string };
 
-// Book colors (FD blue, MGM brown)
 const BOOK_COLORS = {
   fanduel: "#1E90FF",
   betmgm: "#8B4513",
@@ -36,7 +35,7 @@ const AMERICAN = (n: number) => (n > 0 ? `+${n}` : `${n}`);
 const toImpliedPct = (american: number) =>
   american > 0 ? 100 / (american + 100) : Math.abs(american) / (Math.abs(american) + 100);
 
-// (+) = Over/Yes, (-) = Under/No (UI-only)
+// Outcome gating: OVER/YES are non-negative; UNDER/NO negative
 function matchesOutcome(marketKey: MarketKey, outcome: OutcomeKey, american: number) {
   if (marketKey === "batter_home_runs") {
     return outcome === "over" ? american >= 0 : outcome === "under" ? american < 0 : true;
@@ -44,7 +43,9 @@ function matchesOutcome(marketKey: MarketKey, outcome: OutcomeKey, american: num
   return outcome === "yes" ? american >= 0 : outcome === "no" ? american < 0 : true;
 }
 
-// Keep the safety filters you wanted on the chart
+// Chart-only data hygiene (don’t mutate DB):
+// - OVER/YES: ignore absurdly long shots (> +2500)
+// - UNDER/NO: ignore extreme short prices (< -5000)
 function withinThreshold(outcome: OutcomeKey, american: number) {
   if (outcome === "over" || outcome === "yes") return american <= 2500;
   if (outcome === "under" || outcome === "no") return american >= -5000;
@@ -84,7 +85,7 @@ export function OddsChart({
     outcome,
   ]);
 
-  // fetch + merge odds
+  // fetch + merge odds snapshots for each selected player (optionally scoped to selected games)
   useEffect(() => {
     let aborted = false;
     (async () => {
@@ -93,9 +94,10 @@ export function OddsChart({
         players.map(async (p) => {
           let rows: RawRow[] = [];
           if (gameIds.length === 0) {
-            const res = await fetch(`/api/players/${p.player_id}/odds?market_key=${marketKey}&t=${Date.now()}`, {
-              cache: "no-store",
-            });
+            const res = await fetch(
+              `/api/players/${p.player_id}/odds?market_key=${marketKey}&t=${Date.now()}`,
+              { cache: "no-store" }
+            );
             const json = await res.json();
             if (json.ok) rows = json.data as RawRow[];
           } else {
@@ -130,7 +132,7 @@ export function OddsChart({
     refreshTick,
   ]);
 
-  // merge rows by captured_at timestamp into recharts data
+  // merge by timestamp → recharts rows
   const data: Point[] = useMemo(() => {
     const timeMap: Record<string, Point> = {};
     for (const p of players) {
@@ -242,7 +244,7 @@ export function OddsChart({
                   const ts = typeof label === "number" ? label : Number(label);
                   const row = data.find((d) => d.ts === ts);
 
-                  // Prefer exact hovered series; fallback to any numeric
+                  // Prefer hovered series; else any numeric
                   let item =
                     hoverKey && row && typeof row[hoverKey] === "number"
                       ? ({ dataKey: hoverKey, value: row[hoverKey] } as any)
@@ -282,7 +284,7 @@ export function OddsChart({
                 }}
               />
 
-              {/* Draw two series per player. Lines ALWAYS render. */}
+              {/* Always render two lines per player (FD/MGM) */}
               {players.map((p) => {
                 const fdKey = `${p.player_id}__fanduel`;
                 const mgmKey = `${p.player_id}__betmgm`;
