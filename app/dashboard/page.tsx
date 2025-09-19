@@ -31,20 +31,6 @@ export default function DashboardPage() {
   const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
 
-  // Header show/hide on scroll
-  const [headerHidden, setHeaderHidden] = useState(false);
-  useEffect(() => {
-    let lastY = window.scrollY;
-    const onScroll = () => {
-      const y = window.scrollY;
-      const goingDown = y > lastY && y > 24;
-      setHeaderHidden(goingDown);
-      lastY = y;
-    };
-    window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
-  }, []);
-
   useEffect(() => {
     (async () => {
       const res = await fetch("/api/games", { cache: "no-store" });
@@ -86,77 +72,70 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* STICKY header that auto-hides, never overlaps content */}
-      <div className="sticky top-0 z-30">
-        {/* spacer background so content never hides under the bar */}
-        <div className="bg-white border-b">
-          <div
-            className={`transition-transform duration-300 ease-out ${headerHidden ? "-translate-y-full" : "translate-y-0"}`}
-          >
-            <div className="max-w-7xl mx-auto px-4">
-              <div className="flex items-center justify-between py-2">
-                <div className="flex items-center gap-3">
-                  <Image
-                    src="/miscimg/playerpartylogo.png"
-                    alt="PlayerParty"
-                    width={128}
-                    height={32}
-                    priority
-                  />
-                  <span className="hidden sm:inline text-xs text-gray-500">{selectedSummary}</span>
-                </div>
+      {/* STATIC sticky header (no scroll-hide) */}
+      <div className="sticky top-0 z-30 bg-white border-b">
+        <div className="max-w-7xl mx-auto px-4">
+          <div className="flex items-center justify-between py-2">
+            <div className="flex items-center gap-3">
+              <Image
+                src="/miscimg/playerpartylogo.png"
+                alt="PlayerParty"
+                width={128}
+                height={32}
+                priority
+              />
+              <span className="hidden sm:inline text-xs text-gray-500">{selectedSummary}</span>
+            </div>
 
-                <div className="hidden md:flex items-center gap-2">
-                  {/* Market */}
-                  <div className="flex items-center gap-1">
-                    {MARKETS.map((m) => (
-                      <button
-                        key={m.key}
-                        className={`px-3 py-1.5 border rounded-md text-sm ${
-                          market === m.key ? "bg-blue-50 border-blue-300" : "bg-white hover:bg-gray-50"
-                        }`}
-                        onClick={() => setMarket(m.key)}
-                      >
-                        {m.label}
-                      </button>
-                    ))}
-                  </div>
-                  {/* Outcome */}
-                  <div className="flex items-center gap-1">
-                    {MARKETS.find((m) => m.key === market)!.outcomes.map((o) => (
-                      <button
-                        key={o}
-                        className={`px-3 py-1.5 border rounded-md text-sm ${
-                          outcome === o ? "bg-blue-50 border-blue-300" : "bg-white hover:bg-gray-50"
-                        }`}
-                        onClick={() => setOutcome(o)}
-                      >
-                        {o.toUpperCase()}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2">
+            <div className="hidden md:flex items-center gap-2">
+              {/* Market */}
+              <div className="flex items-center gap-1">
+                {MARKETS.map((m) => (
                   <button
-                    onClick={manualRefresh}
-                    disabled={refreshing}
-                    className={`px-3 py-1.5 rounded-md text-xs border ${
-                      refreshing ? "opacity-60 cursor-not-allowed" : "bg-white hover:bg-gray-50"
+                    key={m.key}
+                    className={`px-3 py-1.5 border rounded-md text-sm ${
+                      market === m.key ? "bg-blue-50 border-blue-300" : "bg-white hover:bg-gray-50"
                     }`}
-                    title="Fetch latest odds now"
+                    onClick={() => setMarket(m.key)}
                   >
-                    {refreshing ? "Refreshing…" : "Refresh"}
+                    {m.label}
                   </button>
-                </div>
+                ))}
               </div>
+              {/* Outcome */}
+              <div className="flex items-center gap-1">
+                {MARKETS.find((m) => m.key === market)!.outcomes.map((o) => (
+                  <button
+                    key={o}
+                    className={`px-3 py-1.5 border rounded-md text-sm ${
+                      outcome === o ? "bg-blue-50 border-blue-300" : "bg-white hover:bg-gray-50"
+                    }`}
+                    onClick={() => setOutcome(o)}
+                  >
+                    {o.toUpperCase()}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={manualRefresh}
+                disabled={refreshing}
+                className={`px-3 py-1.5 rounded-md text-xs border ${
+                  refreshing ? "opacity-60 cursor-not-allowed" : "bg-white hover:bg-gray-50"
+                }`}
+                title="Fetch latest odds now"
+              >
+                {refreshing ? "Refreshing…" : "Refresh"}
+              </button>
             </div>
           </div>
         </div>
 
         {/* micro toast under header */}
         {refreshMsg && (
-          <div className="bg-white/80 backdrop-blur border-b">
+          <div className="bg-white/80 backdrop-blur border-t">
             <div className="max-w-7xl mx-auto px-4 py-2 text-xs text-gray-700">{refreshMsg}</div>
           </div>
         )}
