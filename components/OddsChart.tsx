@@ -37,6 +37,15 @@ function matchesOutcome(marketKey: MarketKey, outcome: OutcomeKey, american: num
   return outcome === "yes" ? american >= 0 : outcome === "no" ? american < 0 : true;
 }
 
+// Hide extreme/dirty points from the chart:
+// - OVER / YES  -> hide if odds > +2500
+// - UNDER / NO  -> hide if odds < -5000
+function withinThreshold(outcome: OutcomeKey, american: number) {
+  if (outcome === "over" || outcome === "yes") return american <= 2500;
+  if (outcome === "under" || outcome === "no") return american >= -5000;
+  return true;
+}
+
 export function OddsChart({
   gameIds,
   players,
@@ -88,9 +97,10 @@ export function OddsChart({
             );
             rows = parts.flat();
           }
-          out[p.player_id] = rows.filter((r) =>
-            matchesOutcome(marketKey, outcome, Number(r.american_odds))
-          );
+
+          out[p.player_id] = rows
+            .filter((r) => matchesOutcome(marketKey, outcome, Number(r.american_odds)))
+            .filter((r) => withinThreshold(outcome, Number(r.american_odds)));
         })
       );
       if (!aborted) setSeries(out);
@@ -143,34 +153,16 @@ export function OddsChart({
   const hasData = data.length > 0;
 
   // helper: highlight opacity
-  const fadeIfNotHovered = (key: string) =>
-    hoverKey && hoverKey !== key ? 0.35 : 1;
+  const fadeIfNotHovered = (key: string) => (hoverKey && hoverKey !== key ? 0.35 : 1);
 
   return (
     <div className="w-full bg-white rounded-2xl border shadow-sm">
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2 p-3 border-b text-sm">
         <div className="flex items-center gap-2">
-          <button
-            className="px-2 py-1 border rounded hover:bg-gray-50"
-            onClick={() => zoom(setXDomain, xDomain, tsMin, tsMax, 0.5)}
-            aria-label="Zoom in"
-          >
-            ＋
-          </button>
-          <button
-            className="px-2 py-1 border rounded hover:bg-gray-50"
-            onClick={() => zoom(setXDomain, xDomain, tsMin, tsMax, 1.5)}
-            aria-label="Zoom out"
-          >
-            －
-          </button>
-          <button
-            className="px-2 py-1 border rounded hover:bg-gray-50"
-            onClick={() => resetView(setXDomain, tsMin, tsMax)}
-          >
-            Reset
-          </button>
+          <button className="px-2 py-1 border rounded hover:bg-gray-50" onClick={() => zoom(setXDomain, xDomain, tsMin, tsMax, 0.5)} aria-label="Zoom in">＋</button>
+          <button className="px-2 py-1 border rounded hover:bg-gray-50" onClick={() => zoom(setXDomain, xDomain, tsMin, tsMax, 1.5)} aria-label="Zoom out">－</button>
+          <button className="px-2 py-1 border rounded hover:bg-gray-50" onClick={() => resetView(setXDomain, tsMin, tsMax)}>Reset</button>
         </div>
 
         <div className="flex items-center gap-1 pl-2">
@@ -203,9 +195,7 @@ export function OddsChart({
         </div>
 
         <div className="ml-auto flex items-center gap-2">
-          <button className="px-2 py-1 border rounded hover:bg-gray-50" onClick={() => exportCSV(data, xDomain, tsMin, tsMax)}>
-            Export CSV
-          </button>
+          <button className="px-2 py-1 border rounded hover:bg-gray-50" onClick={() => exportCSV(data, xDomain, tsMin, tsMax)}>Export CSV</button>
           <div className="flex items-center gap-2">
             <span className="text-gray-500">Height</span>
             <input type="range" min={360} max={1000} value={height} onChange={(e) => setHeight(Number(e.target.value))} />
@@ -245,20 +235,13 @@ export function OddsChart({
                   const ts = typeof label === "number" ? label : Number(label);
                   const row = data.find((d) => d.ts === ts);
 
-                  // Prefer exact hovered series; if missing, fallback to the first numeric payload
+                  // Try to show the exact hovered series; fall back gracefully.
                   let item = hoverKey
                     ? payload.find((p) => String(p.dataKey) === hoverKey && typeof p.value === "number")
                     : undefined;
-
-                  // If Recharts didn't provide the matching entry, read straight from our row by key
                   if (!item && hoverKey && row && typeof row[hoverKey] === "number") {
-                    item = {
-                      dataKey: hoverKey,
-                      value: row[hoverKey] as number,
-                    } as any;
+                    item = { dataKey: hoverKey, value: row[hoverKey] as number } as any;
                   }
-
-                  // Still nothing? fallback to first numeric
                   if (!item) item = payload.find((p) => typeof p.value === "number");
                   if (!item) return null;
 
@@ -302,14 +285,10 @@ export function OddsChart({
                       connectNulls
                       dataKey={key}
                       dot={showDots ? { r: 2.5 } : false}
-                      activeDot={{
-                        r: 5,
-                        onMouseOver: () => setHoverKey(key),
-                        onMouseOut: () => setHoverKey(null),
-                      } as any}
+                      activeDot={{ r: 5, onMouseOver: () => setHoverKey(key), onMouseOut: () => setHoverKey(null) } as any}
                       strokeWidth={2.3}
                       stroke={BOOK_COLORS.fanduel}
-                      strokeOpacity={fadeIfNotHovered(key)}
+                      strokeOpacity={hoverKey && hoverKey !== key ? 0.35 : 1}
                       isAnimationActive={false}
                       onMouseOver={() => setHoverKey(key)}
                       onMouseOut={() => setHoverKey(null)}
@@ -325,14 +304,10 @@ export function OddsChart({
                       connectNulls
                       dataKey={key}
                       dot={showDots ? { r: 2.5 } : false}
-                      activeDot={{
-                        r: 5,
-                        onMouseOver: () => setHoverKey(key),
-                        onMouseOut: () => setHoverKey(null),
-                      } as any}
+                      activeDot={{ r: 5, onMouseOver: () => setHoverKey(key), onMouseOut: () => setHoverKey(null) } as any}
                       strokeWidth={2.3}
                       stroke={BOOK_COLORS.betmgm}
-                      strokeOpacity={fadeIfNotHovered(key)}
+                      strokeOpacity={hoverKey && hoverKey !== key ? 0.35 : 1}
                       isAnimationActive={false}
                       onMouseOver={() => setHoverKey(key)}
                       onMouseOut={() => setHoverKey(null)}
