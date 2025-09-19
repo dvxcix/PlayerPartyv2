@@ -2,7 +2,7 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useMemo, useRef, useState, Dispatch, SetStateAction } from "react";
+import { useEffect, useMemo, useState, Dispatch, SetStateAction } from "react";
 import {
   LineChart,
   Line,
@@ -47,6 +47,9 @@ function withinThreshold(outcome: OutcomeKey, american: number) {
   return true;
 }
 
+/** Pan state holder for simple mouse-drag panning */
+const dragging = { current: null as null | { startX: number; startDomain: [number, number] } };
+
 export function OddsChart({
   gameIds,
   players,
@@ -63,8 +66,9 @@ export function OddsChart({
   const [series, setSeries] = useState<Record<string, RawRow[]>>({});
   const [hoverKey, setHoverKey] = useState<string | null>(null);
 
-  // Map of player_id -> resolved headshot src (headshots / headshots2 / _default)
+  // Headshots resolved per player_id (used only for markers; lines render regardless)
   const [headshotSrc, setHeadshotSrc] = useState<Record<string, string>>({});
+  const [headshotMarkers, setHeadshotMarkers] = useState(true);
 
   useEffect(() => setHoverKey(null), [
     players.map((p) => p.player_id).join(","),
@@ -120,7 +124,7 @@ export function OddsChart({
     refreshTick,
   ]);
 
-  // resolve headshot sources for selected players
+  // resolve headshot sources (non-blocking for lines)
   useEffect(() => {
     let cancelled = false;
 
@@ -128,13 +132,13 @@ export function OddsChart({
       try {
         const id = await getIdForName(fullName);
         const candidates = buildHeadshotCandidates(id);
-        // Probe candidates in order with HEAD; pick the first that exists.
+        // Try candidates with HEAD; pick first that exists. If HEAD fails on provider, fallback to default.
         for (const url of candidates) {
           try {
             const res = await fetch(url, { method: "HEAD", cache: "force-cache" });
             if (res.ok) return url;
           } catch {
-            // try next
+            /* try next */
           }
         }
         return "/_default.avif";
@@ -194,18 +198,15 @@ export function OddsChart({
 
   const fadeIfNotHovered = (key: string) => (hoverKey && hoverKey !== key ? 0.35 : 1);
 
-  // ----- headshot marker renderer -----
+  // -------- marker renderers (headshot OR classic dot) --------
   function makeHeadshotDot(seriesKey: string, playerId: string, strokeColor: string) {
-    const src = headshotSrc[playerId] ?? "/_default.avif";
-    const size = 16; // marker size (px)
+    const size = 16;
     const r = size / 2;
-
     return function DotRenderer(props: any) {
       const { cx, cy } = props;
       if (cx == null || cy == null) return null;
-
+      const src = headshotSrc[playerId] ?? "/_default.avif";
       const clipId = `clip-${seriesKey}-${Math.round(cx)}-${Math.round(cy)}`;
-
       return (
         <g>
           <defs>
@@ -227,6 +228,9 @@ export function OddsChart({
       );
     };
   }
+
+  const classicDot = { r: 2.5 } as const;
+  const headshotActive = { r: 8 } as any; // keeps a generous hover target
 
   return (
     <div className="w-full bg-white rounded-2xl border shadow-sm">
@@ -256,6 +260,21 @@ export function OddsChart({
             <input type="checkbox" checked={showMGM} onChange={() => setShowMGM((v) => !v)} />
             <Image src="/miscimg/MGM.png" alt="BetMGM" width={16} height={16} />
             <span>BetMGM</span>
+          </label>
+        </div>
+
+        <div className="flex items-center gap-3 pl-2">
+          <label className="inline-flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={headshotMarkers}
+              onChange={() => setHeadshotMarkers((v) => !v)}
+            />
+            Headshot markers
+          </label>
+          <label className="inline-flex items-center gap-2">
+            <input type="checkbox" checked={smooth} onChange={() => setSmooth((v) => !v)} />
+            Smooth lines
           </label>
         </div>
 
@@ -299,7 +318,6 @@ export function OddsChart({
                   const ts = typeof label === "number" ? label : Number(label);
                   const row = data.find((d) => d.ts === ts);
 
-                  // Prefer exact hovered series; fallback to any numeric
                   let item = hoverKey && row && typeof row[hoverKey] === "number"
                     ? { dataKey: hoverKey, value: row[hoverKey] } as any
                     : payload.find((p) => typeof p.value === "number");
@@ -333,45 +351,41 @@ export function OddsChart({
                 }}
               />
 
-              {/* Lines with HEADSHOT markers; non-hovered series fade */}
+              {/* LINES ALWAYS RENDER; markers are optional */}
               {players.map((p) => {
                 const fdKey = `${p.player_id}__fanduel`;
                 const mgmKey = `${p.player_id}__betmgm`;
-                const fdDot = makeHeadshotDot(fdKey, p.player_id, BOOK_COLORS.fanduel);
-                const mgmDot = makeHeadshotDot(mgmKey, p.player_id, BOOK_COLORS.betmgm);
+                const fdDot = headshotMarkers ? makeHeadshotDot(fdKey, p.player_id, BOOK_COLORS.fanduel) : classicDot;
+                const mgmDot = headshotMarkers ? makeHeadshotDot(mgmKey, p.player_id, BOOK_COLORS.betmgm) : classicDot;
 
                 return (
                   <g key={p.player_id}>
-                    {showFD && (
-                      <Line
-                        type={smooth ? "monotone" : "linear"}
-                        connectNulls
-                        dataKey={fdKey}
-                        dot={fdDot as any}
-                        activeDot={{ r: 8, onMouseOver: () => setHoverKey(fdKey), onMouseOut: () => setHoverKey(null) } as any}
-                        strokeWidth={2.3}
-                        stroke={BOOK_COLORS.fanduel}
-                        strokeOpacity={fadeIfNotHovered(fdKey)}
-                        isAnimationActive={false}
-                        onMouseOver={() => setHoverKey(fdKey)}
-                        onMouseOut={() => setHoverKey(null)}
-                      />
-                    )}
-                    {showMGM && (
-                      <Line
-                        type={smooth ? "monotone" : "linear"}
-                        connectNulls
-                        dataKey={mgmKey}
-                        dot={mgmDot as any}
-                        activeDot={{ r: 8, onMouseOver: () => setHoverKey(mgmKey), onMouseOut: () => setHoverKey(null) } as any}
-                        strokeWidth={2.3}
-                        stroke={BOOK_COLORS.betmgm}
-                        strokeOpacity={fadeIfNotHovered(mgmKey)}
-                        isAnimationActive={false}
-                        onMouseOver={() => setHoverKey(mgmKey)}
-                        onMouseOut={() => setHoverKey(null)}
-                      />
-                    )}
+                    <Line
+                      type={smooth ? "monotone" : "linear"}
+                      connectNulls
+                      dataKey={fdKey}
+                      stroke={BOOK_COLORS.fanduel}
+                      strokeWidth={2.3}
+                      strokeOpacity={(!showFD ? 0 : hoverKey && hoverKey !== fdKey ? 0.35 : 1)}
+                      dot={showFD ? (fdDot as any) : false}
+                      activeDot={showFD ? ({ r: 8, onMouseOver: () => setHoverKey(fdKey), onMouseOut: () => setHoverKey(null) } as any) : false}
+                      isAnimationActive={false}
+                      onMouseOver={() => setHoverKey(fdKey)}
+                      onMouseOut={() => setHoverKey(null)}
+                    />
+                    <Line
+                      type={smooth ? "monotone" : "linear"}
+                      connectNulls
+                      dataKey={mgmKey}
+                      stroke={BOOK_COLORS.betmgm}
+                      strokeWidth={2.3}
+                      strokeOpacity={(!showMGM ? 0 : hoverKey && hoverKey !== mgmKey ? 0.35 : 1)}
+                      dot={showMGM ? (mgmDot as any) : false}
+                      activeDot={showMGM ? ({ r: 8, onMouseOver: () => setHoverKey(mgmKey), onMouseOut: () => setHoverKey(null) } as any) : false}
+                      isAnimationActive={false}
+                      onMouseOver={() => setHoverKey(mgmKey)}
+                      onMouseOut={() => setHoverKey(null)}
+                    />
                   </g>
                 );
               })}
@@ -399,20 +413,31 @@ export function OddsChart({
 
 /* ---------- panning / zoom helpers ---------- */
 
-const dragging = { current: null as null | { startX: number; startDomain: [number, number] } };
-
-function handleMouseDown(e: any, xDomain: [number, number] | undefined, setX: Dispatch<SetStateAction<[number, number] | undefined>>) {
+function handleMouseDown(
+  e: any,
+  xDomain: [number, number] | undefined,
+  setX: Dispatch<SetStateAction<[number, number] | undefined>>
+) {
   if (!xDomain || !e || typeof e.activeLabel !== "number") return;
   dragging.current = { startX: e.activeLabel, startDomain: xDomain };
 }
-function handleMouseMove(e: any, xDomain: [number, number] | undefined, setX: Dispatch<SetStateAction<[number, number] | undefined>>) {
+function handleMouseMove(
+  e: any,
+  xDomain: [number, number] | undefined,
+  setX: Dispatch<SetStateAction<[number, number] | undefined>>
+) {
   if (!dragging.current || !xDomain || !e || typeof e.activeLabel !== "number") return;
   const { startX, startDomain } = dragging.current;
   const delta = startX - e.activeLabel;
   setX([startDomain[0] + delta, startDomain[1] + delta]);
 }
 
-function wheelZoom(e: React.WheelEvent, setX: Dispatch<SetStateAction<[number, number] | undefined>>, domain: [number, number] | undefined, data: Point[]) {
+function wheelZoom(
+  e: React.WheelEvent,
+  setX: Dispatch<SetStateAction<[number, number] | undefined>>,
+  domain: [number, number] | undefined,
+  data: Point[]
+) {
   if (!domain) return;
   e.preventDefault();
   const [a, b] = domain;
