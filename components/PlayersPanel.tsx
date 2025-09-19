@@ -1,8 +1,18 @@
 // components/PlayersPanel.tsx
 "use client";
 
-import Image from "next/image";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { HeadshotImg } from "./HeadshotImg";
+
+type Game = {
+  id: string;
+  home_abbr: string;
+  away_abbr: string;
+  start_time?: string;
+  participants?: { player_id: string; full_name: string; team_abbr?: string }[];
+};
+
+type Player = { player_id: string; full_name: string };
 
 export function PlayersPanel({
   games,
@@ -10,151 +20,101 @@ export function PlayersPanel({
   value,
   onChange,
 }: {
-  games: any[];
+  games: Game[];
   selectedGameIds: string[];
-  value: { player_id: string; full_name: string }[];
-  onChange: (v: { player_id: string; full_name: string }[]) => void;
+  value: Player[];
+  onChange: (players: Player[]) => void;
 }) {
-  const [q, setQ] = useState("");
+  const [query, setQuery] = useState("");
 
-  const grouped = useMemo(() => {
-    const picked = new Set(selectedGameIds);
-    const map: Record<string, { game: any; players: any[] }> = {};
-    for (const g of games ?? []) {
-      if (!picked.has(g.game_id)) continue;
-      const plist = (g.participants ?? [])
-        .slice()
-        .sort((a: any, b: any) => a.full_name.localeCompare(b.full_name));
-      map[g.game_id] = { game: g, players: plist };
-    }
-    return map;
-  }, [games, selectedGameIds]);
-
-  const allPlayers = useMemo(() => {
-    const arr: Array<{ game_id: string; player_id: string; full_name: string }> = [];
-    for (const gid of Object.keys(grouped)) {
-      for (const p of grouped[gid].players) {
-        arr.push({ game_id: gid, player_id: p.player_id, full_name: p.full_name });
+  // Build the list of players from selected games (unique by player_id)
+  const availablePlayers: Player[] = useMemo(() => {
+    const selectedSet = new Set(selectedGameIds);
+    const map = new Map<string, Player>();
+    for (const g of games) {
+      if (selectedSet.size && !selectedSet.has(g.id)) continue;
+      for (const p of g.participants ?? []) {
+        if (!map.has(p.player_id)) {
+          map.set(p.player_id, { player_id: p.player_id, full_name: p.full_name });
+        }
       }
     }
-    if (!q.trim()) return arr;
-    const t = q.toLowerCase();
-    return arr.filter((p) => p.full_name.toLowerCase().includes(t));
-  }, [grouped, q]);
+    return Array.from(map.values()).sort((a, b) => a.full_name.localeCompare(b.full_name));
+  }, [games, selectedGameIds.join(",")]);
 
+  // Filter by search
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return availablePlayers;
+    return availablePlayers.filter((p) => p.full_name.toLowerCase().includes(q));
+  }, [availablePlayers, query]);
+
+  // Selection helpers
   const selectedIds = useMemo(() => new Set(value.map((v) => v.player_id)), [value]);
 
-  function togglePlayer(p: { player_id: string; full_name: string }) {
-    if (selectedIds.has(p.player_id)) onChange(value.filter((x) => x.player_id !== p.player_id));
-    else onChange([...value, p]);
+  function togglePlayer(p: Player) {
+    if (selectedIds.has(p.player_id)) {
+      onChange(value.filter((v) => v.player_id !== p.player_id));
+    } else {
+      onChange([...value, p]);
+    }
   }
 
-  function selectAllVisible() {
-    const set = new Set(selectedIds);
-    const merged = [...value];
-    for (const p of allPlayers) {
-      if (!set.has(p.player_id)) {
-        set.add(p.player_id);
-        merged.push({ player_id: p.player_id, full_name: p.full_name });
-      }
-    }
-    onChange(merged);
+  function selectAllShown() {
+    const merged = new Map<string, Player>();
+    for (const v of value) merged.set(v.player_id, v);
+    for (const p of filtered) merged.set(p.player_id, p);
+    onChange(Array.from(merged.values()));
   }
 
   function clearAll() {
     onChange([]);
   }
 
-  const logo = (abbr?: string) =>
-    abbr ? `/logos/${String(abbr).toLowerCase()}.png` : "/logos/placeholder.png";
-
   return (
     <div className="space-y-3">
+      {/* Search & bulk actions */}
       <div className="flex items-center gap-2">
         <input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
+          type="text"
           placeholder="Search players…"
-          className="w-full border rounded-md px-3 py-2 text-sm"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          className="w-full px-3 py-2 border rounded-md text-sm"
         />
-        <button
-          className="px-3 py-2 border rounded-md text-sm bg-white hover:bg-gray-50"
-          onClick={selectAllVisible}
-        >
-          Select all
+        <button className="px-2 py-2 border rounded-md text-xs hover:bg-gray-50" onClick={selectAllShown}>
+          Select All
         </button>
-        <button
-          className="px-3 py-2 border rounded-md text-sm bg-white hover:bg-gray-50"
-          onClick={clearAll}
-        >
+        <button className="px-2 py-2 border rounded-md text-xs hover:bg-gray-50" onClick={clearAll}>
           Clear
         </button>
       </div>
 
-      <div className="space-y-4 max-h-[28rem] overflow-auto pr-1">
-        {Object.keys(grouped).map((gid) => {
-          const g = grouped[gid].game;
-          const players = grouped[gid].players.filter((p: any) =>
-            !q.trim() ? true : p.full_name.toLowerCase().includes(q.toLowerCase())
-          );
-          return (
-            <div key={gid} className="border rounded-xl overflow-hidden">
-              <div className="px-3 py-2 bg-gray-50 border-b flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="flex items-center gap-2">
-                    <Image
-                      src={logo(g.away_team)}
-                      alt={g.away_team}
-                      width={18}
-                      height={18}
-                      className="rounded"
+      {/* List */}
+      <div className="max-h-[360px] overflow-auto rounded-md border">
+        {filtered.length === 0 ? (
+          <div className="p-3 text-sm text-gray-500">No players match your search.</div>
+        ) : (
+          <ul className="divide-y">
+            {filtered.map((p) => {
+              const checked = selectedIds.has(p.player_id);
+              return (
+                <li key={p.player_id} className="p-2 hover:bg-gray-50">
+                  <label className="flex items-center gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => togglePlayer(p)}
+                      className="mt-0.5"
                     />
-                    <span className="text-sm font-medium">{g.away_team}</span>
-                  </div>
-                  <span className="text-gray-400">@</span>
-                  <div className="flex items-center gap-2">
-                    <Image
-                      src={logo(g.home_team)}
-                      alt={g.home_team}
-                      width={18}
-                      height={18}
-                      className="rounded"
-                    />
-                    <span className="text-sm font-medium">{g.home_team}</span>
-                  </div>
-                </div>
-                <div className="text-xs text-gray-500">
-                  {new Date(g.commence_time).toLocaleString()}
-                </div>
-              </div>
-
-              <div className="p-2 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
-                {players.map((p: any) => {
-                  const checked = selectedIds.has(p.player_id);
-                  return (
-                    <label
-                      key={p.player_id}
-                      className={`flex items-center gap-2 text-sm px-2 py-1 rounded-md border ${
-                        checked ? "bg-blue-50 border-blue-300" : "bg-white hover:bg-gray-50"
-                      }`}
-                      onClick={() =>
-                        togglePlayer({ player_id: p.player_id, full_name: p.full_name })
-                      }
-                    >
-                      <input type="checkbox" className="h-4 w-4" readOnly checked={checked} />
-                      <span className="truncate">{p.full_name}</span>
-                    </label>
-                  );
-                })}
-                {!players.length && (
-                  <div className="text-sm text-gray-500 px-2 py-1">No players match.</div>
-                )}
-              </div>
-            </div>
-          );
-        })}
-        {!Object.keys(grouped).length && (
-          <div className="text-sm text-gray-500 px-2">Pick at least one game to list players.</div>
+                    {/* Headshot next to the name */}
+                    <HeadshotImg fullName={p.full_name} size={28} />
+                    <span className="text-sm">{p.full_name}</span>
+                  </label>
+                </li>
+              );
+            })}
+          </ul>
         )}
       </div>
     </div>
