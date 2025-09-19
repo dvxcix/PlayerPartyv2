@@ -14,8 +14,8 @@ import {
   Brush,
 } from "recharts";
 import { BOOK_COLORS } from "@/lib/odds";
+import type { PlayerPick } from "./PlayersPanel";
 
-type Player = { player_id: string; full_name: string };
 type MarketKey = "batter_home_runs" | "batter_first_home_run";
 type OutcomeKey = "over" | "under" | "yes" | "no";
 
@@ -37,13 +37,106 @@ function matchesOutcome(marketKey: MarketKey, outcome: OutcomeKey, american: num
   return outcome === "yes" ? american >= 0 : outcome === "no" ? american < 0 : true;
 }
 
-// Hide extreme/dirty points from the chart:
+// Hide extreme/dirty points:
 // - OVER / YES  -> hide if odds > +2500
 // - UNDER / NO  -> hide if odds < -5000
 function withinThreshold(outcome: OutcomeKey, american: number) {
   if (outcome === "over" || outcome === "yes") return american <= 2500;
   if (outcome === "under" || outcome === "no") return american >= -5000;
   return true;
+}
+
+// ----- Marker helpers -----
+type MarkerStyle = "dot" | "initials" | "logo+initials";
+
+function initials(name: string) {
+  const parts = name.trim().split(/\s+/);
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+function makeMarkerRenderer(
+  seriesKey: string,
+  player: PlayerPick,
+  marker: MarkerStyle,
+  color: string
+) {
+  // Custom SVG renderer for <Line dot={...}> that closes over the series context
+  return function DotRenderer(props: any) {
+    const { cx, cy, payload } = props;
+    if (cx == null || cy == null) return null;
+
+    if (marker === "dot") {
+      return (
+        <circle cx={cx} cy={cy} r={2.5} fill={color} fillOpacity={0.95} />
+      );
+    }
+
+    const label = initials(player.full_name);
+    const size = 14; // marker size
+    const half = size / 2;
+
+    if (marker === "logo+initials") {
+      const logo = player.team_abbr ? `/logos/${player.team_abbr}.png` : null;
+      return (
+        <g>
+          {/* logo circle */}
+          {logo ? (
+            <>
+              <defs>
+                <clipPath id={`clip-${seriesKey}-${cx}-${cy}`}>
+                  <circle cx={cx} cy={cy} r={half} />
+                </clipPath>
+              </defs>
+              {/* Embedded raster logo */}
+              <image
+                href={logo}
+                x={cx - half}
+                y={cy - half}
+                width={size}
+                height={size}
+                clipPath={`url(#clip-${seriesKey}-${cx}-${cy})`}
+                preserveAspectRatio="xMidYMid slice"
+              />
+              <circle cx={cx} cy={cy} r={half} stroke={color} strokeWidth={1.5} fill="none" />
+            </>
+          ) : (
+            <circle cx={cx} cy={cy} r={half} fill="#fff" stroke={color} strokeWidth={1.5} />
+          )}
+          {/* initials overlay */}
+          <text
+            x={cx}
+            y={cy + 0.5}
+            textAnchor="middle"
+            fontSize="8"
+            fontWeight={700}
+            fill="#111"
+            pointerEvents="none"
+          >
+            {label}
+          </text>
+        </g>
+      );
+    }
+
+    // initials only
+    return (
+      <g>
+        <circle cx={cx} cy={cy} r={half} fill="#fff" stroke={color} strokeWidth={1.5} />
+        <text
+          x={cx}
+          y={cy + 0.5}
+          textAnchor="middle"
+          fontSize="8"
+          fontWeight={700}
+          fill="#111"
+          pointerEvents="none"
+        >
+          {label}
+        </text>
+      </g>
+    );
+  };
 }
 
 export function OddsChart({
@@ -54,7 +147,7 @@ export function OddsChart({
   refreshTick = 0,
 }: {
   gameIds: string[];
-  players: Player[];
+  players: PlayerPick[];
   marketKey: MarketKey;
   outcome: OutcomeKey;
   refreshTick?: number;
@@ -134,8 +227,10 @@ export function OddsChart({
   const [height, setHeight] = useState(680);
   const [showFD, setShowFD] = useState(true);
   const [showMGM, setShowMGM] = useState(true);
-  const [showDots, setShowDots] = useState(true);
   const [smooth, setSmooth] = useState(false);
+
+  // NEW: marker style toggle
+  const [markerStyle, setMarkerStyle] = useState<MarkerStyle>("logo+initials");
 
   // zoom/pan domain
   const tsMin = data.length ? data[0].ts : undefined;
@@ -152,7 +247,6 @@ export function OddsChart({
   );
   const hasData = data.length > 0;
 
-  // helper: highlight opacity
   const fadeIfNotHovered = (key: string) => (hoverKey && hoverKey !== key ? 0.35 : 1);
 
   return (
@@ -184,18 +278,32 @@ export function OddsChart({
             <Image src="/miscimg/MGM.png" alt="BetMGM" width={16} height={16} />
             <span>BetMGM</span>
           </label>
-          <label className="inline-flex items-center gap-1">
-            <input type="checkbox" checked={showDots} onChange={() => setShowDots((v) => !v)} />
-            Dots
-          </label>
-          <label className="inline-flex items-center gap-1">
-            <input type="checkbox" checked={smooth} onChange={() => setSmooth((v) => !v)} />
-            Smooth
-          </label>
+        </div>
+
+        {/* Marker style */}
+        <div className="flex items-center gap-1 pl-2">
+          <span className="text-gray-500">Markers:</span>
+          <button
+            className={`px-2 py-1 border rounded ${markerStyle === "dot" ? "bg-blue-50 border-blue-300" : "hover:bg-gray-50"}`}
+            onClick={() => setMarkerStyle("dot")}
+          >
+            Dot
+          </button>
+          <button
+            className={`px-2 py-1 border rounded ${markerStyle === "initials" ? "bg-blue-50 border-blue-300" : "hover:bg-gray-50"}`}
+            onClick={() => setMarkerStyle("initials")}
+          >
+            Initials
+          </button>
+          <button
+            className={`px-2 py-1 border rounded ${markerStyle === "logo+initials" ? "bg-blue-50 border-blue-300" : "hover:bg-gray-50"}`}
+            onClick={() => setMarkerStyle("logo+initials")}
+          >
+            Logo+Initials
+          </button>
         </div>
 
         <div className="ml-auto flex items-center gap-2">
-          <button className="px-2 py-1 border rounded hover:bg-gray-50" onClick={() => exportCSV(data, xDomain, tsMin, tsMax)}>Export CSV</button>
           <div className="flex items-center gap-2">
             <span className="text-gray-500">Height</span>
             <input type="range" min={360} max={1000} value={height} onChange={(e) => setHeight(Number(e.target.value))} />
@@ -235,14 +343,12 @@ export function OddsChart({
                   const ts = typeof label === "number" ? label : Number(label);
                   const row = data.find((d) => d.ts === ts);
 
-                  // Try to show the exact hovered series; fall back gracefully.
-                  let item = hoverKey
-                    ? payload.find((p) => String(p.dataKey) === hoverKey && typeof p.value === "number")
-                    : undefined;
-                  if (!item && hoverKey && row && typeof row[hoverKey] === "number") {
-                    item = { dataKey: hoverKey, value: row[hoverKey] as number } as any;
+                  let item = null as any;
+                  if (row && hoverKey && typeof row[hoverKey] === "number") {
+                    item = { dataKey: hoverKey, value: row[hoverKey] } as any;
+                  } else {
+                    item = payload.find((p) => typeof p.value === "number");
                   }
-                  if (!item) item = payload.find((p) => typeof p.value === "number");
                   if (!item) return null;
 
                   const [playerId, bookmaker] = String(item.dataKey).split("__");
@@ -273,48 +379,47 @@ export function OddsChart({
                 }}
               />
 
-              {/* Lines: highlight hovered series; bigger active dots for hit area */}
-              {Object.keys(playersById).flatMap((playerId) => {
-                const nodes: JSX.Element[] = [];
-                if (showFD) {
-                  const key = `${playerId}__fanduel`;
-                  nodes.push(
-                    <Line
-                      key={key}
-                      type={smooth ? "monotone" : "linear"}
-                      connectNulls
-                      dataKey={key}
-                      dot={showDots ? { r: 2.5 } : false}
-                      activeDot={{ r: 5, onMouseOver: () => setHoverKey(key), onMouseOut: () => setHoverKey(null) } as any}
-                      strokeWidth={2.3}
-                      stroke={BOOK_COLORS.fanduel}
-                      strokeOpacity={hoverKey && hoverKey !== key ? 0.35 : 1}
-                      isAnimationActive={false}
-                      onMouseOver={() => setHoverKey(key)}
-                      onMouseOut={() => setHoverKey(null)}
-                    />
-                  );
-                }
-                if (showMGM) {
-                  const key = `${playerId}__betmgm`;
-                  nodes.push(
-                    <Line
-                      key={key}
-                      type={smooth ? "monotone" : "linear"}
-                      connectNulls
-                      dataKey={key}
-                      dot={showDots ? { r: 2.5 } : false}
-                      activeDot={{ r: 5, onMouseOver: () => setHoverKey(key), onMouseOut: () => setHoverKey(null) } as any}
-                      strokeWidth={2.3}
-                      stroke={BOOK_COLORS.betmgm}
-                      strokeOpacity={hoverKey && hoverKey !== key ? 0.35 : 1}
-                      isAnimationActive={false}
-                      onMouseOver={() => setHoverKey(key)}
-                      onMouseOut={() => setHoverKey(null)}
-                    />
-                  );
-                }
-                return nodes;
+              {/* Lines with custom markers; hover fade for non-focused series */}
+              {players.map((p) => {
+                const fdKey = `${p.player_id}__fanduel`;
+                const mgmKey = `${p.player_id}__betmgm`;
+                const fdDot = makeMarkerRenderer(fdKey, p, markerStyle, BOOK_COLORS.fanduel);
+                const mgmDot = makeMarkerRenderer(mgmKey, p, markerStyle, BOOK_COLORS.betmgm);
+
+                return (
+                  <g key={p.player_id}>
+                    {showFD && (
+                      <Line
+                        type={smooth ? "monotone" : "linear"}
+                        connectNulls
+                        dataKey={fdKey}
+                        dot={fdDot as any}
+                        activeDot={{ r: 6, onMouseOver: () => setHoverKey(fdKey), onMouseOut: () => setHoverKey(null) } as any}
+                        strokeWidth={2.3}
+                        stroke={BOOK_COLORS.fanduel}
+                        strokeOpacity={fadeIfNotHovered(fdKey)}
+                        isAnimationActive={false}
+                        onMouseOver={() => setHoverKey(fdKey)}
+                        onMouseOut={() => setHoverKey(null)}
+                      />
+                    )}
+                    {showMGM && (
+                      <Line
+                        type={smooth ? "monotone" : "linear"}
+                        connectNulls
+                        dataKey={mgmKey}
+                        dot={mgmDot as any}
+                        activeDot={{ r: 6, onMouseOver: () => setHoverKey(mgmKey), onMouseOut: () => setHoverKey(null) } as any}
+                        strokeWidth={2.3}
+                        stroke={BOOK_COLORS.betmgm}
+                        strokeOpacity={fadeIfNotHovered(mgmKey)}
+                        isAnimationActive={false}
+                        onMouseOver={() => setHoverKey(mgmKey)}
+                        onMouseOut={() => setHoverKey(null)}
+                      />
+                    )}
+                  </g>
+                );
               })}
 
               <Brush
@@ -399,25 +504,4 @@ function applyPreset(
   const end = tsMax;
   const start = end - hours * 60 * 60 * 1000;
   setX([Math.max(tsMin, start), end]);
-}
-
-function exportCSV(
-  data: Point[],
-  domain: [number, number] | undefined,
-  tsMin: number | undefined,
-  tsMax: number | undefined
-) {
-  if (!data.length) return;
-  const [a, b] = domain ?? [tsMin ?? 0, tsMax ?? 0];
-  const filtered = data.filter((d) => d.ts >= a && d.ts <= b);
-  const headers = ["captured_at", ...Object.keys(filtered[0]).filter((k) => k !== "captured_at" && k !== "ts")];
-  const rows = [headers.join(",")];
-  for (const d of filtered) rows.push(headers.map((h) => (d as any)[h] ?? "").join(","));
-  const blob = new Blob([rows.join("\n")], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const aEl = document.createElement("a");
-  aEl.href = url;
-  aEl.download = "odds_view.csv";
-  aEl.click();
-  URL.revokeObjectURL(url);
 }
