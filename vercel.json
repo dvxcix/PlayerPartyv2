@@ -1,11 +1,11 @@
 {
   "crons": [
     {
-      "path": "/api/cron/events",
-      "schedule": "0 12 * * *"
+      "path": "/api/cron/odds",
+      "schedule": "*/15 * * * *"
     },
     {
-      "path": "/api/cron/odds",
+      "path": "/api/cron/events",
       "schedule": "0 * * * *"
     }
   ]
