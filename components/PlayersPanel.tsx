@@ -5,7 +5,12 @@ import { useMemo, useState } from "react";
 import { HeadshotImg } from "./HeadshotImg";
 
 type AnyParticipant =
-  | { player_id: string; full_name?: string; team_abbr?: string; players?: { full_name?: string } }
+  | {
+      player_id: string;
+      full_name?: string;
+      team_abbr?: string;
+      players?: { full_name?: string };
+    }
   | Record<string, any>;
 
 type AnyGame = {
@@ -16,7 +21,7 @@ type AnyGame = {
   [k: string]: any;
 };
 
-type Player = { player_id: string; full_name: string };
+export type PlayerPick = { player_id: string; full_name: string; team_abbr?: string };
 
 function getGameId(g: AnyGame): string | undefined {
   return (g.id ?? g.game_id)?.toString();
@@ -26,7 +31,7 @@ function getParticipants(g: AnyGame): AnyParticipant[] {
   return (g.participants ?? g.game_participants ?? []) as AnyParticipant[];
 }
 
-function normalizePlayer(p: AnyParticipant | null | undefined): Player | null {
+function normalizePlayer(p: AnyParticipant | null | undefined): PlayerPick | null {
   if (!p) return null;
   const player_id = (p as any).player_id ?? (p as any).playerId ?? (p as any).id;
   if (!player_id) return null;
@@ -36,7 +41,11 @@ function normalizePlayer(p: AnyParticipant | null | undefined): Player | null {
     (p as any).players?.full_name ??
     String(player_id);
 
-  return { player_id: String(player_id), full_name: String(full_name) };
+  const team_abbr = (p as any).team_abbr
+    ? String((p as any).team_abbr).toLowerCase()
+    : undefined;
+
+  return { player_id: String(player_id), full_name: String(full_name), team_abbr };
 }
 
 export function PlayersPanel({
@@ -47,18 +56,17 @@ export function PlayersPanel({
 }: {
   games: AnyGame[];
   selectedGameIds: string[];
-  value: Player[];
-  onChange: (players: Player[]) => void;
+  value: PlayerPick[];
+  onChange: (players: PlayerPick[]) => void;
 }) {
   const [query, setQuery] = useState("");
 
-  // Build the source player list:
-  // - If no games selected: all players from all games
-  // - Else: players only from selected games (union)
-  const availablePlayers: Player[] = useMemo(() => {
+  // If no games selected -> ALL players from ALL games.
+  // Else -> union of players from selected games.
+  const availablePlayers: PlayerPick[] = useMemo(() => {
     const filterToSelected = selectedGameIds && selectedGameIds.length > 0;
     const selectedSet = new Set((selectedGameIds ?? []).map(String));
-    const map = new Map<string, Player>();
+    const map = new Map<string, PlayerPick>();
 
     for (const g of games ?? []) {
       const gid = getGameId(g);
@@ -68,24 +76,29 @@ export function PlayersPanel({
       for (const raw of parts) {
         const p = normalizePlayer(raw);
         if (!p) continue;
-        if (!map.has(p.player_id)) map.set(p.player_id, p);
+
+        // prefer first occurrence; but if later one has team_abbr and first didn't, merge team_abbr
+        if (!map.has(p.player_id)) {
+          map.set(p.player_id, p);
+        } else if (p.team_abbr && !map.get(p.player_id)!.team_abbr) {
+          map.set(p.player_id, { ...map.get(p.player_id)!, team_abbr: p.team_abbr });
+        }
       }
     }
 
     return Array.from(map.values()).sort((a, b) => a.full_name.localeCompare(b.full_name));
   }, [games, selectedGameIds.map(String).join(",")]);
 
-  // Filter by search text
+  // Filter by search
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return availablePlayers;
     return availablePlayers.filter((p) => p.full_name.toLowerCase().includes(q));
   }, [availablePlayers, query]);
 
-  // Current selection set for fast lookups
   const selectedIds = useMemo(() => new Set(value.map((v) => v.player_id)), [value]);
 
-  function togglePlayer(p: Player) {
+  function togglePlayer(p: PlayerPick) {
     if (selectedIds.has(p.player_id)) {
       onChange(value.filter((v) => v.player_id !== p.player_id));
     } else {
@@ -95,7 +108,7 @@ export function PlayersPanel({
 
   function selectAllShown() {
     if (filtered.length === 0) return;
-    const merged = new Map<string, Player>();
+    const merged = new Map<string, PlayerPick>();
     for (const v of value) merged.set(v.player_id, v);
     for (const p of filtered) merged.set(p.player_id, p);
     onChange(Array.from(merged.values()));
@@ -153,6 +166,15 @@ export function PlayersPanel({
                     />
                     <HeadshotImg fullName={p.full_name} size={28} />
                     <span className="text-sm">{p.full_name}</span>
+                    {p.team_abbr && (
+                      <img
+                        src={`/logos/${p.team_abbr}.png`}
+                        alt={p.team_abbr.toUpperCase()}
+                        width={18}
+                        height={18}
+                        className="ml-auto rounded-sm border"
+                      />
+                    )}
                   </label>
                 </li>
               );
