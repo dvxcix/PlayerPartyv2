@@ -19,9 +19,9 @@ type MarketKey = "batter_home_runs" | "batter_first_home_run";
 type OutcomeKey = "over" | "under" | "yes" | "no";
 
 type RawRow = {
-  captured_at: string; // ISO
-  american_odds: number;
-  bookmaker: "fanduel" | "betmgm" | string;
+  captured_at: string;            // ISO string
+  american_odds: number | string; // be defensive
+  bookmaker: string;              // any casing
 };
 
 type Point = { captured_at: string; ts: number; [seriesKey: string]: number | string };
@@ -35,16 +35,29 @@ const AMERICAN = (n: number) => (n > 0 ? `+${n}` : `${n}`);
 const toImpliedPct = (american: number) =>
   american > 0 ? 100 / (american + 100) : Math.abs(american) / (Math.abs(american) + 100);
 
-// Outcome gating: OVER/YES are non-negative; UNDER/NO negative
+// Normalize bookmaker labels to our two keys or return null to ignore
+function normalizeBook(b: string): "fanduel" | "betmgm" | null {
+  const s = (b || "").toLowerCase().replace(/[\s_-]+/g, "");
+  if (s.includes("fanduel") || s === "fd") return "fanduel";
+  if (s.includes("betmgm") || s === "mgm") return "betmgm";
+  return null;
+}
+
+// Outcome gating: use your convention (+ = Over/Yes, - = Under/No)
 function matchesOutcome(marketKey: MarketKey, outcome: OutcomeKey, american: number) {
   if (marketKey === "batter_home_runs") {
-    return outcome === "over" ? american >= 0 : outcome === "under" ? american < 0 : true;
+    if (outcome === "over") return american >= 0;
+    if (outcome === "under") return american < 0;
+    return true;
   }
-  return outcome === "yes" ? american >= 0 : outcome === "no" ? american < 0 : true;
+  // first HR market uses yes/no
+  if (outcome === "yes") return american >= 0;
+  if (outcome === "no") return american < 0;
+  return true;
 }
 
 // Chart-only data hygiene (don’t mutate DB):
-// - OVER/YES: ignore absurdly long shots (> +2500)
+// - OVER/YES: ignore absurd long shots (> +2500)
 // - UNDER/NO: ignore extreme short prices (< -5000)
 function withinThreshold(outcome: OutcomeKey, american: number) {
   if (outcome === "over" || outcome === "yes") return american <= 2500;
@@ -52,7 +65,6 @@ function withinThreshold(outcome: OutcomeKey, american: number) {
   return true;
 }
 
-// simple pan state
 const dragging = { current: null as null | { startX: number; startDomain: [number, number] } };
 
 export function OddsChart({
@@ -85,7 +97,7 @@ export function OddsChart({
     outcome,
   ]);
 
-  // fetch + merge odds snapshots for each selected player (optionally scoped to selected games)
+  // Fetch odds snapshots per player (optionally scoped to selected games)
   useEffect(() => {
     let aborted = false;
     (async () => {
@@ -99,7 +111,7 @@ export function OddsChart({
               { cache: "no-store" }
             );
             const json = await res.json();
-            if (json.ok) rows = json.data as RawRow[];
+            if (json.ok) rows = (json.data as RawRow[]) ?? [];
           } else {
             const parts = await Promise.all(
               gameIds.map(async (gid) => {
@@ -108,15 +120,35 @@ export function OddsChart({
                   { cache: "no-store" }
                 );
                 const json = await res.json();
-                return json.ok ? (json.data as RawRow[]) : [];
+                return json.ok ? ((json.data as RawRow[]) ?? []) : [];
               })
             );
             rows = parts.flat();
           }
 
-          out[p.player_id] = rows
+          // Keep only our two books & coerce types
+          const normalized = rows
+            .map((r) => {
+              const b = normalizeBook(r.bookmaker);
+              if (!b) return null;
+              const ao = Number(r.american_odds);
+              if (!isFinite(ao)) return null;
+              const ts = Date.parse(r.captured_at);
+              if (!isFinite(ts)) return null;
+              return { ...r, american_odds: ao, bookmaker: b, captured_at: new Date(ts).toISOString() } as RawRow;
+            })
+            .filter(Boolean) as RawRow[];
+
+          // Apply outcome + threshold filters, but if that yields nothing, fall back to raw normalized rows
+          let filtered = normalized
             .filter((r) => matchesOutcome(marketKey, outcome, Number(r.american_odds)))
             .filter((r) => withinThreshold(outcome, Number(r.american_odds)));
+
+          if (filtered.length === 0 && normalized.length > 0) {
+            filtered = normalized; // fallback so lines still render
+          }
+
+          out[p.player_id] = filtered;
         })
       );
       if (!aborted) setSeries(out);
@@ -132,27 +164,32 @@ export function OddsChart({
     refreshTick,
   ]);
 
-  // merge by timestamp → recharts rows
+  // Merge by timestamp into recharts rows
   const data: Point[] = useMemo(() => {
     const timeMap: Record<string, Point> = {};
     for (const p of players) {
       for (const r of series[p.player_id] ?? []) {
         const t = r.captured_at;
         if (!timeMap[t]) timeMap[t] = { captured_at: t, ts: Date.parse(t) };
-        const key = `${p.player_id}__${r.bookmaker}`;
-        timeMap[t][key] = r.american_odds;
+        const book = normalizeBook(r.bookmaker);
+        if (!book) continue;
+        const key = `${p.player_id}__${book}`;
+        timeMap[t][key] = Number(r.american_odds);
       }
     }
     return Object.values(timeMap).sort((a, b) => a.ts - b.ts);
   }, [series, players.map((p) => p.player_id).join(",")]);
 
-  // zoom/pan domain
-  const tsMin = data.length ? data[0].ts : undefined;
-  const tsMax = data.length ? data[data.length - 1].ts : undefined;
+  // Domain (pad single-point spans so they render)
+  const tsMinRaw = data.length ? data[0].ts : undefined;
+  const tsMaxRaw = data.length ? data[data.length - 1].ts : undefined;
   const [xDomain, setXDomain] = useState<[number, number] | undefined>(undefined);
+
   useEffect(() => {
-    if (tsMin !== undefined && tsMax !== undefined) setXDomain([tsMin, tsMax]);
-  }, [tsMin, tsMax, players.map((p) => p.player_id).join(",")]);
+    if (tsMinRaw === undefined || tsMaxRaw === undefined) return;
+    const [min, max] = padIfEqual(tsMinRaw, tsMaxRaw);
+    setXDomain([min, max]);
+  }, [tsMinRaw, tsMaxRaw, players.map((p) => p.player_id).join(",")]);
 
   const playersById = useMemo(
     () => Object.fromEntries(players.map((p) => [p.player_id, p])),
@@ -167,17 +204,17 @@ export function OddsChart({
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2 p-3 border-b text-sm">
         <div className="flex items-center gap-2">
-          <button className="px-2 py-1 border rounded hover:bg-gray-50" onClick={() => zoom(setXDomain, xDomain, tsMin, tsMax, 0.5)} aria-label="Zoom in">＋</button>
-          <button className="px-2 py-1 border rounded hover:bg-gray-50" onClick={() => zoom(setXDomain, xDomain, tsMin, tsMax, 1.5)} aria-label="Zoom out">－</button>
-          <button className="px-2 py-1 border rounded hover:bg-gray-50" onClick={() => resetView(setXDomain, tsMin, tsMax)}>Reset</button>
+          <button className="px-2 py-1 border rounded hover:bg-gray-50" onClick={() => zoom(setXDomain, xDomain, tsMinRaw, tsMaxRaw, 0.5)} aria-label="Zoom in">＋</button>
+          <button className="px-2 py-1 border rounded hover:bg-gray-50" onClick={() => zoom(setXDomain, xDomain, tsMinRaw, tsMaxRaw, 1.5)} aria-label="Zoom out">－</button>
+          <button className="px-2 py-1 border rounded hover:bg-gray-50" onClick={() => resetView(setXDomain, tsMinRaw, tsMaxRaw)}>Reset</button>
         </div>
 
         <div className="flex items-center gap-1 pl-2">
           <span className="text-gray-500">Preset:</span>
-          <button className="px-2 py-1 border rounded hover:bg-gray-50" onClick={() => applyPreset(setXDomain, tsMin, tsMax, 6)}>6h</button>
-          <button className="px-2 py-1 border rounded hover:bg-gray-50" onClick={() => applyPreset(setXDomain, tsMin, tsMax, 12)}>12h</button>
-          <button className="px-2 py-1 border rounded hover:bg-gray-50" onClick={() => applyPreset(setXDomain, tsMin, tsMax, 24)}>24h</button>
-          <button className="px-2 py-1 border rounded hover:bg-gray-50" onClick={() => resetView(setXDomain, tsMin, tsMax)}>All</button>
+          <button className="px-2 py-1 border rounded hover:bg-gray-50" onClick={() => applyPreset(setXDomain, tsMinRaw, tsMaxRaw, 6)}>6h</button>
+          <button className="px-2 py-1 border rounded hover:bg-gray-50" onClick={() => applyPreset(setXDomain, tsMinRaw, tsMaxRaw, 12)}>12h</button>
+          <button className="px-2 py-1 border rounded hover:bg-gray-50" onClick={() => applyPreset(setXDomain, tsMinRaw, tsMaxRaw, 24)}>24h</button>
+          <button className="px-2 py-1 border rounded hover:bg-gray-50" onClick={() => resetView(setXDomain, tsMinRaw, tsMaxRaw)}>All</button>
         </div>
 
         <div className="flex items-center gap-3 pl-2">
@@ -362,7 +399,13 @@ export function OddsChart({
   );
 }
 
-/* ---------- panning / zoom helpers ---------- */
+/* ---------- helpers ---------- */
+
+function padIfEqual(a: number, b: number): [number, number] {
+  if (a !== b) return [a, b];
+  const pad = 30 * 60 * 1000; // 30 minutes
+  return [a - pad, b + pad];
+}
 
 function handleMouseDown(
   e: any,
@@ -382,7 +425,6 @@ function handleMouseMove(
   const delta = startX - e.activeLabel;
   setX([startDomain[0] + delta, startDomain[1] + delta]);
 }
-
 function wheelZoom(
   e: React.WheelEvent,
   setX: Dispatch<SetStateAction<[number, number] | undefined>>,
@@ -399,7 +441,6 @@ function wheelZoom(
   const maxTs = data[data.length - 1]?.ts ?? b;
   setX([Math.max(minTs, center - half), Math.min(maxTs, center + half)]);
 }
-
 function zoom(
   setX: Dispatch<SetStateAction<[number, number] | undefined>>,
   domain: [number, number] | undefined,
@@ -415,7 +456,6 @@ function zoom(
   const nb = Math.min(tsMax ?? b, center + half);
   setX([na, nb]);
 }
-
 function resetView(
   setX: Dispatch<SetStateAction<[number, number] | undefined>>,
   tsMin: number | undefined,
@@ -423,7 +463,6 @@ function resetView(
 ) {
   if (tsMin !== undefined && tsMax !== undefined) setX([tsMin, tsMax]);
 }
-
 function applyPreset(
   setX: Dispatch<SetStateAction<[number, number] | undefined>>,
   tsMin: number | undefined,
