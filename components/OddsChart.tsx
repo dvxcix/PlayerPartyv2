@@ -120,3 +120,96 @@ function CustomTooltip({
           day: "2-digit",
           hour: "2-digit",
           minute: "2-digit",
+        })}
+      </div>
+      <div className="space-y-1">
+        {rows.map((r, i) => (
+          <div key={i} className="flex items-center justify-between gap-4">
+            <span className="inline-flex items-center gap-2">
+              <span className="inline-block h-2 w-2 rounded-full" style={{ background: r.color }} />
+              {r.name}
+            </span>
+            <span className="tabular-nums">{r.american}</span>
+            <span className="text-gray-500 tabular-nums">{r.prob}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export function OddsChart({
+  gameId,
+  players,
+  marketKey,
+  outcome,
+}: {
+  gameId: string | null;
+  players: Player[];
+  marketKey: MarketKey;
+  outcome: OutcomeKey;
+}) {
+  const data = usePlayerSeries(gameId, players, marketKey, outcome);
+
+  const playersById = useMemo(() => {
+    const m: Record<string, Player> = {};
+    for (const p of players) m[p.player_id] = p;
+    return m;
+  }, [players]);
+
+  // Build 2 lines per player (FD + MGM). Legend items are clickable to mute a series.
+  const lines = players.flatMap((p) => [
+    <Line
+      key={`${p.player_id}__fanduel`}
+      type="linear"
+      connectNulls
+      dataKey={`${p.player_id}__fanduel`}
+      name={`${p.full_name} — FanDuel`}
+      dot={{ r: 2.5 }}
+      strokeWidth={2.25}
+      stroke={BOOK_COLORS.fanduel}
+      isAnimationActive={false}
+    />,
+    <Line
+      key={`${p.player_id}__betmgm`}
+      type="linear"
+      connectNulls
+      dataKey={`${p.player_id}__betmgm`}
+      name={`${p.full_name} — BetMGM`}
+      dot={{ r: 2.5 }}
+      strokeWidth={2.25}
+      stroke={BOOK_COLORS.betmgm}
+      isAnimationActive={false}
+    />,
+  ]);
+
+  const hasData = data.length > 0;
+
+  return (
+    <div className="h-[520px] w-full bg-white rounded-2xl p-3 shadow-sm">
+      {!hasData ? (
+        <div className="h-full grid place-items-center text-sm text-gray-500">
+          No snapshots yet for this selection. Try switching outcome (e.g., OVER) or wait for the next cron run.
+        </div>
+      ) : (
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={data} margin={{ top: 8, right: 16, left: 12, bottom: 16 }}>
+            <CartesianGrid strokeDasharray="4 4" />
+            <XAxis
+              dataKey="captured_at"
+              tickFormatter={(t) =>
+                new Date(t as string).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+              }
+              minTickGap={48}
+            />
+            <YAxis tickFormatter={(v) => (Number(v) > 0 ? `+${v}` : `${v}`)} width={56} />
+            <Tooltip content={<CustomTooltip playersById={playersById} />} isAnimationActive={false} />
+            <Legend wrapperStyle={{ paddingTop: 8 }} />
+            {lines}
+            <Brush dataKey="captured_at" height={22} travellerWidth={8} />
+          </LineChart>
+        </ResponsiveContainer>
+      )}
+    </div>
+  );
+}
