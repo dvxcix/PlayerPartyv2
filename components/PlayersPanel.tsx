@@ -5,12 +5,7 @@ import { useMemo, useState } from "react";
 import { HeadshotImg } from "./HeadshotImg";
 
 type AnyParticipant =
-  | {
-      player_id: string;
-      full_name?: string;
-      team_abbr?: string;
-      players?: { full_name?: string };
-    }
+  | { player_id: string; full_name?: string; team_abbr?: string; players?: { full_name?: string } }
   | Record<string, any>;
 
 type AnyGame = {
@@ -21,7 +16,7 @@ type AnyGame = {
   [k: string]: any;
 };
 
-export type PlayerPick = { player_id: string; full_name: string; team_abbr?: string };
+type Player = { player_id: string; full_name: string };
 
 function getGameId(g: AnyGame): string | undefined {
   return (g.id ?? g.game_id)?.toString();
@@ -31,7 +26,7 @@ function getParticipants(g: AnyGame): AnyParticipant[] {
   return (g.participants ?? g.game_participants ?? []) as AnyParticipant[];
 }
 
-function normalizePlayer(p: AnyParticipant | null | undefined): PlayerPick | null {
+function normalizePlayer(p: AnyParticipant | null | undefined): Player | null {
   if (!p) return null;
   const player_id = (p as any).player_id ?? (p as any).playerId ?? (p as any).id;
   if (!player_id) return null;
@@ -41,11 +36,7 @@ function normalizePlayer(p: AnyParticipant | null | undefined): PlayerPick | nul
     (p as any).players?.full_name ??
     String(player_id);
 
-  const team_abbr = (p as any).team_abbr
-    ? String((p as any).team_abbr).toLowerCase()
-    : undefined;
-
-  return { player_id: String(player_id), full_name: String(full_name), team_abbr };
+  return { player_id: String(player_id), full_name: String(full_name) };
 }
 
 export function PlayersPanel({
@@ -56,17 +47,17 @@ export function PlayersPanel({
 }: {
   games: AnyGame[];
   selectedGameIds: string[];
-  value: PlayerPick[];
-  onChange: (players: PlayerPick[]) => void;
+  value: Player[];
+  onChange: (players: Player[]) => void;
 }) {
   const [query, setQuery] = useState("");
 
-  // If no games selected -> ALL players from ALL games.
-  // Else -> union of players from selected games.
-  const availablePlayers: PlayerPick[] = useMemo(() => {
+  // If no games selected: ALL players from ALL games.
+  // Else: union of players from selected games.
+  const availablePlayers: Player[] = useMemo(() => {
     const filterToSelected = selectedGameIds && selectedGameIds.length > 0;
     const selectedSet = new Set((selectedGameIds ?? []).map(String));
-    const map = new Map<string, PlayerPick>();
+    const map = new Map<string, Player>();
 
     for (const g of games ?? []) {
       const gid = getGameId(g);
@@ -76,13 +67,7 @@ export function PlayersPanel({
       for (const raw of parts) {
         const p = normalizePlayer(raw);
         if (!p) continue;
-
-        // prefer first occurrence; but if later one has team_abbr and first didn't, merge team_abbr
-        if (!map.has(p.player_id)) {
-          map.set(p.player_id, p);
-        } else if (p.team_abbr && !map.get(p.player_id)!.team_abbr) {
-          map.set(p.player_id, { ...map.get(p.player_id)!, team_abbr: p.team_abbr });
-        }
+        if (!map.has(p.player_id)) map.set(p.player_id, p);
       }
     }
 
@@ -98,7 +83,7 @@ export function PlayersPanel({
 
   const selectedIds = useMemo(() => new Set(value.map((v) => v.player_id)), [value]);
 
-  function togglePlayer(p: PlayerPick) {
+  function togglePlayer(p: Player) {
     if (selectedIds.has(p.player_id)) {
       onChange(value.filter((v) => v.player_id !== p.player_id));
     } else {
@@ -108,7 +93,7 @@ export function PlayersPanel({
 
   function selectAllShown() {
     if (filtered.length === 0) return;
-    const merged = new Map<string, PlayerPick>();
+    const merged = new Map<string, Player>();
     for (const v of value) merged.set(v.player_id, v);
     for (const p of filtered) merged.set(p.player_id, p);
     onChange(Array.from(merged.values()));
@@ -166,15 +151,6 @@ export function PlayersPanel({
                     />
                     <HeadshotImg fullName={p.full_name} size={28} />
                     <span className="text-sm">{p.full_name}</span>
-                    {p.team_abbr && (
-                      <img
-                        src={`/logos/${p.team_abbr}.png`}
-                        alt={p.team_abbr.toUpperCase()}
-                        width={18}
-                        height={18}
-                        className="ml-auto rounded-sm border"
-                      />
-                    )}
                   </label>
                 </li>
               );
