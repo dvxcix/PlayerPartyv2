@@ -19,6 +19,7 @@ type Player = { player_id: string; full_name: string };
 type MarketKey = "batter_home_runs" | "batter_first_home_run";
 type OutcomeKey = "over" | "under" | "yes" | "no";
 
+type RawRow = { captured_at: string; american_odds: number; bookmaker: string };
 type Point = {
   captured_at: string;
   [seriesKey: string]: number | string;
@@ -28,28 +29,52 @@ const AMERICAN = (n: number) => (n > 0 ? `+${n}` : `${n}`);
 const toImpliedPct = (american: number) =>
   american > 0 ? 100 / (american + 100) : Math.abs(american) / (Math.abs(american) + 100);
 
+// Outcome logic (front-end only) based on your current data convention:
+// + price => Over/Yes, - price => Under/No
+function rowMatchesOutcome(
+  marketKey: MarketKey,
+  outcome: OutcomeKey,
+  american: number
+): boolean {
+  if (marketKey === "batter_home_runs") {
+    if (outcome === "over") return american >= 0;
+    if (outcome === "under") return american < 0;
+  } else {
+    // batter_first_home_run
+    if (outcome === "yes") return american >= 0;
+    if (outcome === "no") return american < 0;
+  }
+  return true;
+}
+
 function usePlayerSeries(
   gameId: string | null,
   players: Player[],
   marketKey: MarketKey,
   outcome: OutcomeKey
 ) {
-  const [series, setSeries] = useState<Record<string, any[]>>({});
+  const [series, setSeries] = useState<Record<string, RawRow[]>>({});
 
   useEffect(() => {
     let aborted = false;
     (async () => {
-      const out: Record<string, any[]> = {};
+      const out: Record<string, RawRow[]> = {};
       await Promise.all(
         players.map(async (p) => {
-          // NOTE: backend currently ignores outcome. If/when outcome data exists,
-          // you can extend /api/players/[id]/odds to filter server-side.
           const url = `/api/players/${p.player_id}/odds?market_key=${marketKey}${
             gameId ? `&game_id=${gameId}` : ""
           }`;
           const res = await fetch(url, { cache: "no-store" });
           const json = await res.json();
-          if (json.ok) out[p.player_id] = json.data; // [{captured_at, american_odds, bookmaker}]
+          if (json.ok) {
+            // Filter by outcome using price sign convention
+            const filtered: RawRow[] = (json.data as RawRow[]).filter((r) =>
+              rowMatchesOutcome(marketKey, outcome, Number(r.american_odds))
+            );
+            out[p.player_id] = filtered;
+          } else {
+            out[p.player_id] = [];
+          }
         })
       );
       if (!aborted) setSeries(out);
@@ -59,8 +84,7 @@ function usePlayerSeries(
     };
   }, [gameId, marketKey, outcome, players.map((p) => p.player_id).join(",")]);
 
-  // Without outcome in the DB, the toggle is a view preference. If your DB later
-  // stores outcome, this is where you'd filter by it. For now we just plot what we have.
+  // Merge timelines by timestamp so all selected players (and both books) appear together
   const merged: Point[] = useMemo(() => {
     const timeMap: Record<string, Point> = {};
     for (const p of players) {
@@ -68,7 +92,7 @@ function usePlayerSeries(
       for (const r of rows) {
         const t = r.captured_at;
         if (!timeMap[t]) timeMap[t] = { captured_at: t };
-        const key = `${p.player_id}__${r.bookmaker}`;
+        const key = `${p.player_id}__${r.bookmaker}`; // e.g., "123__fanduel"
         timeMap[t][key] = r.american_odds;
       }
     }
@@ -189,7 +213,7 @@ export function OddsChart({
     <div className="h-[520px] w-full bg-white rounded-2xl p-3 shadow-sm">
       {!hasData ? (
         <div className="h-full grid place-items-center text-sm text-gray-500">
-          No snapshots yet for this selection. Try switching outcome (e.g., OVER) or wait for the next cron run.
+          No snapshots for this outcome yet. Try switching to OVER/YES, or wait for the next cron.
         </div>
       ) : (
         <ResponsiveContainer width="100%" height="100%">
