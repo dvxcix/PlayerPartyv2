@@ -48,7 +48,7 @@ export function OddsChart({
   players: Player[];
   marketKey: MarketKey;
   outcome: OutcomeKey;
-  refreshTick?: number; // bump to force refetch
+  refreshTick?: number;
 }) {
   const [series, setSeries] = useState<Record<string, RawRow[]>>({});
   const [hoverKey, setHoverKey] = useState<string | null>(null);
@@ -60,7 +60,7 @@ export function OddsChart({
     outcome,
   ]);
 
-  // fetch + merge (supports multiple games). Re-run when refreshTick changes.
+  // fetch + merge
   useEffect(() => {
     let aborted = false;
     (async () => {
@@ -103,7 +103,7 @@ export function OddsChart({
     marketKey,
     outcome,
     gameIds.join(","),
-    refreshTick, // << refetch when manual refresh occurs
+    refreshTick,
   ]);
 
   // merge by timestamp
@@ -117,19 +117,17 @@ export function OddsChart({
         timeMap[t][key] = r.american_odds;
       }
     }
-    const arr = Object.values(timeMap);
-    arr.sort((a, b) => a.ts - b.ts);
-    return arr;
+    return Object.values(timeMap).sort((a, b) => a.ts - b.ts);
   }, [series, players.map((p) => p.player_id).join(",")]);
 
-  // interactivity / layout (same goodies)
+  // interactivity / layout
   const [height, setHeight] = useState(680);
   const [showFD, setShowFD] = useState(true);
   const [showMGM, setShowMGM] = useState(true);
   const [showDots, setShowDots] = useState(true);
   const [smooth, setSmooth] = useState(false);
 
-  // zoom/pan/brush domain
+  // zoom/pan domain
   const tsMin = data.length ? data[0].ts : undefined;
   const tsMax = data.length ? data[data.length - 1].ts : undefined;
   const [xDomain, setXDomain] = useState<[number, number] | undefined>(undefined);
@@ -144,9 +142,13 @@ export function OddsChart({
   );
   const hasData = data.length > 0;
 
+  // helper: highlight opacity
+  const fadeIfNotHovered = (key: string) =>
+    hoverKey && hoverKey !== key ? 0.35 : 1;
+
   return (
     <div className="w-full bg-white rounded-2xl border shadow-sm">
-      {/* Slim toolbar */}
+      {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2 p-3 border-b text-sm">
         <div className="flex items-center gap-2">
           <button
@@ -156,9 +158,6 @@ export function OddsChart({
           >
             ＋
           </button>
-        </div>
-
-        <div className="flex items-center gap-2">
           <button
             className="px-2 py-1 border rounded hover:bg-gray-50"
             onClick={() => zoom(setXDomain, xDomain, tsMin, tsMax, 1.5)}
@@ -176,65 +175,29 @@ export function OddsChart({
 
         <div className="flex items-center gap-1 pl-2">
           <span className="text-gray-500">Preset:</span>
-          <button
-            className="px-2 py-1 border rounded hover:bg-gray-50"
-            onClick={() => applyPreset(setXDomain, tsMin, tsMax, 6)}
-          >
-            6h
-          </button>
-          <button
-            className="px-2 py-1 border rounded hover:bg-gray-50"
-            onClick={() => applyPreset(setXDomain, tsMin, tsMax, 12)}
-          >
-            12h
-          </button>
-          <button
-            className="px-2 py-1 border rounded hover:bg-gray-50"
-            onClick={() => applyPreset(setXDomain, tsMin, tsMax, 24)}
-          >
-            24h
-          </button>
-          <button
-            className="px-2 py-1 border rounded hover:bg-gray-50"
-            onClick={() => resetView(setXDomain, tsMin, tsMax)}
-          >
-            All
-          </button>
+          <button className="px-2 py-1 border rounded hover:bg-gray-50" onClick={() => applyPreset(setXDomain, tsMin, tsMax, 6)}>6h</button>
+          <button className="px-2 py-1 border rounded hover:bg-gray-50" onClick={() => applyPreset(setXDomain, tsMin, tsMax, 12)}>12h</button>
+          <button className="px-2 py-1 border rounded hover:bg-gray-50" onClick={() => applyPreset(setXDomain, tsMin, tsMax, 24)}>24h</button>
+          <button className="px-2 py-1 border rounded hover:bg-gray-50" onClick={() => resetView(setXDomain, tsMin, tsMax)}>All</button>
         </div>
 
         <div className="flex items-center gap-3 pl-2">
           <label className="inline-flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={showFD}
-              onChange={() => setShowFD((v) => !v)}
-            />
+            <input type="checkbox" checked={showFD} onChange={() => setShowFD((v) => !v)} />
             <Image src="/miscimg/FD.png" alt="FanDuel" width={16} height={16} />
             <span>FanDuel</span>
           </label>
           <label className="inline-flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={showMGM}
-              onChange={() => setShowMGM((v) => !v)}
-            />
+            <input type="checkbox" checked={showMGM} onChange={() => setShowMGM((v) => !v)} />
             <Image src="/miscimg/MGM.png" alt="BetMGM" width={16} height={16} />
             <span>BetMGM</span>
           </label>
           <label className="inline-flex items-center gap-1">
-            <input
-              type="checkbox"
-              checked={showDots}
-              onChange={() => setShowDots((v) => !v)}
-            />
+            <input type="checkbox" checked={showDots} onChange={() => setShowDots((v) => !v)} />
             Dots
           </label>
           <label className="inline-flex items-center gap-1">
-            <input
-              type="checkbox"
-              checked={smooth}
-              onChange={() => setSmooth((v) => !v)}
-            />
+            <input type="checkbox" checked={smooth} onChange={() => setSmooth((v) => !v)} />
             Smooth
           </label>
         </div>
@@ -245,228 +208,187 @@ export function OddsChart({
           </button>
           <div className="flex items-center gap-2">
             <span className="text-gray-500">Height</span>
-            <input
-              type="range"
-              min={360}
-              max={1000}
-              value={height}
-              onChange={(e) => setHeight(Number(e.target.value))}
-            />
+            <input type="range" min={360} max={1000} value={height} onChange={(e) => setHeight(Number(e.target.value))} />
             <span className="tabular-nums w-12 text-right">{height}px</span>
           </div>
         </div>
       </div>
 
-      {/* Chart (no legend; tooltip only for hovered line) */}
-      <ChartCore
-        data={data}
-        height={height}
-        xDomain={xDomain}
-        setXDomain={setXDomain}
-        hoverKey={hoverKey}
-        setHoverKey={setHoverKey}
-        playersById={playersById}
-        showFD={showFD}
-        showMGM={showMGM}
-        showDots={showDots}
-        smooth={smooth}
-      />
-    </div>
-  );
-}
+      {/* Chart */}
+      <div className="w-full" style={{ height }} onWheel={(e) => wheelZoom(e, setXDomain, xDomain, data)}>
+        {!hasData ? (
+          <div className="h-full grid place-items-center text-sm text-gray-500">No snapshots for this selection yet.</div>
+        ) : (
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart
+              data={data}
+              margin={{ top: 8, right: 16, left: 12, bottom: 8 }}
+              onMouseDown={(e) => handleMouseDown(e, xDomain, setXDomain)}
+              onMouseMove={(e) => handleMouseMove(e, xDomain, setXDomain)}
+              onMouseUp={() => (dragging.current = null)}
+            >
+              <CartesianGrid strokeDasharray="4 4" />
+              <XAxis
+                dataKey="ts"
+                type="number"
+                domain={xDomain ?? ["auto", "auto"]}
+                scale="time"
+                tickFormatter={(ts) => new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                minTickGap={48}
+              />
+              <YAxis tickFormatter={(v) => (Number(v) > 0 ? `+${v}` : `${v}`)} width={56} />
+              <Tooltip
+                isAnimationActive={false}
+                content={({ active, payload, label }) => {
+                  if (!active || !payload?.length) return null;
 
-/* ---------------- ChartCore ---------------- */
+                  const ts = typeof label === "number" ? label : Number(label);
+                  const row = data.find((d) => d.ts === ts);
 
-function ChartCore({
-  data,
-  height,
-  xDomain,
-  setXDomain,
-  hoverKey,
-  setHoverKey,
-  playersById,
-  showFD,
-  showMGM,
-  showDots,
-  smooth,
-}: {
-  data: Point[];
-  height: number;
-  xDomain: [number, number] | undefined;
-  setXDomain: Dispatch<SetStateAction<[number, number] | undefined>>;
-  hoverKey: string | null;
-  setHoverKey: (k: string | null) => void;
-  playersById: Record<string, Player>;
-  showFD: boolean;
-  showMGM: boolean;
-  showDots: boolean;
-  smooth: boolean;
-}) {
-  const hasData = data.length > 0;
+                  // Prefer exact hovered series; if missing, fallback to the first numeric payload
+                  let item = hoverKey
+                    ? payload.find((p) => String(p.dataKey) === hoverKey && typeof p.value === "number")
+                    : undefined;
 
-  // drag-to-pan
-  const dragging = useRef<{ startX: number; startDomain: [number, number] } | null>(null);
-  function handleMouseDown(e: any) {
-    if (!xDomain || !e || typeof e.activeLabel !== "number") return;
-    dragging.current = { startX: e.activeLabel, startDomain: xDomain };
-  }
-  function handleMouseMove(e: any) {
-    if (!dragging.current || !xDomain || !e || typeof e.activeLabel !== "number") return;
-    const { startX, startDomain } = dragging.current;
-    const delta = startX - e.activeLabel;
-    setXDomain([startDomain[0] + delta, startDomain[1] + delta]);
-  }
-  function handleMouseUp() {
-    dragging.current = null;
-  }
-  function onWheel(e: React.WheelEvent) {
-    if (!xDomain) return;
-    e.preventDefault();
-    const dir = e.deltaY > 0 ? 1 : -1;
-    const [a, b] = xDomain;
-    const center = (a + b) / 2;
-    const factor = dir > 0 ? 1.15 : 0.85;
-    const half = ((b - a) / 2) * factor;
-    setXDomain([Math.max(data[0]?.ts ?? a, center - half), Math.min(data[data.length - 1]?.ts ?? b, center + half)]);
-  }
+                  // If Recharts didn't provide the matching entry, read straight from our row by key
+                  if (!item && hoverKey && row && typeof row[hoverKey] === "number") {
+                    item = {
+                      dataKey: hoverKey,
+                      value: row[hoverKey] as number,
+                    } as any;
+                  }
 
-  return (
-    <div className="w-full" style={{ height }} onWheel={onWheel}>
-      {!hasData ? (
-        <div className="h-full grid place-items-center text-sm text-gray-500">
-          No snapshots for this selection yet.
-        </div>
-      ) : (
-        <ResponsiveContainer width="100%" height="100%">
-          <LineChart
-            data={data}
-            margin={{ top: 8, right: 16, left: 12, bottom: 8 }}
-            onMouseDown={handleMouseDown}
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
-          >
-            <CartesianGrid strokeDasharray="4 4" />
-            <XAxis
-              dataKey="ts"
-              type="number"
-              domain={xDomain ?? ["auto", "auto"]}
-              scale="time"
-              tickFormatter={(ts) =>
-                new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-              }
-              minTickGap={48}
-            />
-            <YAxis tickFormatter={(v) => (Number(v) > 0 ? `+${v}` : `${v}`)} width={56} />
-            <Tooltip
-              isAnimationActive={false}
-              content={({ active, payload, label }) => {
-                if (!active || !hoverKey || !payload?.length) return null;
-                const item = payload.find(
-                  (p) => String(p.dataKey) === hoverKey && typeof p.value === "number"
-                );
-                if (!item) return null;
+                  // Still nothing? fallback to first numeric
+                  if (!item) item = payload.find((p) => typeof p.value === "number");
+                  if (!item) return null;
 
-                const [playerId, bookmaker] = String(item.dataKey).split("__");
-                const american = item.value as number;
-                const prob = toImpliedPct(american);
-                const d = typeof label === "number" ? new Date(label) : new Date(label ?? "");
+                  const [playerId, bookmaker] = String(item.dataKey).split("__");
+                  const american = Number(item.value);
+                  const prob = toImpliedPct(american);
+                  const d = new Date(ts);
 
-                return (
-                  <div className="rounded-md border bg-white px-3 py-2 shadow-sm text-sm">
-                    <div className="mb-1 font-medium">
-                      {d.toLocaleString([], {
-                        month: "short",
-                        day: "2-digit",
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
+                  return (
+                    <div className="rounded-md border bg-white px-3 py-2 shadow-sm text-sm">
+                      <div className="mb-1 font-medium">
+                        {d.toLocaleString([], { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                      </div>
+                      <div className="flex items-center justify-between gap-4">
+                        <span className="inline-flex items-center gap-2">
+                          <Image
+                            src={bookmaker === "fanduel" ? "/miscimg/FD.png" : "/miscimg/MGM.png"}
+                            alt={bookmaker?.toUpperCase() ?? ""}
+                            width={16}
+                            height={16}
+                          />
+                          {playersById[playerId]?.full_name ?? playerId} — {bookmaker?.toUpperCase()}
+                        </span>
+                        <span className="tabular-nums">{AMERICAN(american)}</span>
+                        <span className="text-gray-500 tabular-nums">{(prob * 100).toFixed(1)}%</span>
+                      </div>
                     </div>
-                    <div className="flex items-center justify-between gap-4">
-                      <span className="inline-flex items-center gap-2">
-                        <Image
-                          src={bookmaker === "fanduel" ? "/miscimg/FD.png" : "/miscimg/MGM.png"}
-                          alt={bookmaker.toUpperCase()}
-                          width={16}
-                          height={16}
-                        />
-                        {playersById[playerId]?.full_name ?? playerId} — {bookmaker.toUpperCase()}
-                      </span>
-                      <span className="tabular-nums">{AMERICAN(american)}</span>
-                      <span className="text-gray-500 tabular-nums">
-                        {(prob * 100).toFixed(1)}%
-                      </span>
-                    </div>
-                  </div>
-                );
-              }}
-            />
+                  );
+                }}
+              />
 
-            {/* Lines: hover locks tooltip to the exact series */}
-            {Object.keys(playersById).flatMap((playerId) => {
-              const lines: JSX.Element[] = [];
-              if (showFD) {
-                const fdKey = `${playerId}__fanduel`;
-                lines.push(
-                  <Line
-                    key={fdKey}
-                    type={smooth ? "monotone" : "linear"}
-                    connectNulls
-                    dataKey={fdKey}
-                    dot={showDots ? { r: 2.5 } : false}
-                    strokeWidth={2.25}
-                    stroke={BOOK_COLORS.fanduel}
-                    isAnimationActive={false}
-                    onMouseOver={() => setHoverKey(fdKey)}
-                    onMouseOut={() => setHoverKey(null)}
-                  />
-                );
-              }
-              if (showMGM) {
-                const mgmKey = `${playerId}__betmgm`;
-                lines.push(
-                  <Line
-                    key={mgmKey}
-                    type={smooth ? "monotone" : "linear"}
-                    connectNulls
-                    dataKey={mgmKey}
-                    dot={showDots ? { r: 2.5 } : false}
-                    strokeWidth={2.25}
-                    stroke={BOOK_COLORS.betmgm}
-                    isAnimationActive={false}
-                    onMouseOver={() => setHoverKey(mgmKey)}
-                    onMouseOut={() => setHoverKey(null)}
-                  />
-                );
-              }
-              return lines;
-            })}
-
-            <Brush
-              dataKey="ts"
-              height={22}
-              travellerWidth={8}
-              tickFormatter={(ts) =>
-                new Date(ts as number).toLocaleTimeString([], {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                })
-              }
-              onChange={(range) => {
-                if (range?.startIndex != null && range?.endIndex != null) {
-                  const si = Math.max(0, range.startIndex);
-                  const ei = Math.min(data.length - 1, range.endIndex);
-                  setXDomain([data[si].ts, data[ei].ts]);
+              {/* Lines: highlight hovered series; bigger active dots for hit area */}
+              {Object.keys(playersById).flatMap((playerId) => {
+                const nodes: JSX.Element[] = [];
+                if (showFD) {
+                  const key = `${playerId}__fanduel`;
+                  nodes.push(
+                    <Line
+                      key={key}
+                      type={smooth ? "monotone" : "linear"}
+                      connectNulls
+                      dataKey={key}
+                      dot={showDots ? { r: 2.5 } : false}
+                      activeDot={{
+                        r: 5,
+                        onMouseOver: () => setHoverKey(key),
+                        onMouseOut: () => setHoverKey(null),
+                      } as any}
+                      strokeWidth={2.3}
+                      stroke={BOOK_COLORS.fanduel}
+                      strokeOpacity={fadeIfNotHovered(key)}
+                      isAnimationActive={false}
+                      onMouseOver={() => setHoverKey(key)}
+                      onMouseOut={() => setHoverKey(null)}
+                    />
+                  );
                 }
-              }}
-            />
-          </LineChart>
-        </ResponsiveContainer>
-      )}
+                if (showMGM) {
+                  const key = `${playerId}__betmgm`;
+                  nodes.push(
+                    <Line
+                      key={key}
+                      type={smooth ? "monotone" : "linear"}
+                      connectNulls
+                      dataKey={key}
+                      dot={showDots ? { r: 2.5 } : false}
+                      activeDot={{
+                        r: 5,
+                        onMouseOver: () => setHoverKey(key),
+                        onMouseOut: () => setHoverKey(null),
+                      } as any}
+                      strokeWidth={2.3}
+                      stroke={BOOK_COLORS.betmgm}
+                      strokeOpacity={fadeIfNotHovered(key)}
+                      isAnimationActive={false}
+                      onMouseOver={() => setHoverKey(key)}
+                      onMouseOut={() => setHoverKey(null)}
+                    />
+                  );
+                }
+                return nodes;
+              })}
+
+              <Brush
+                dataKey="ts"
+                height={22}
+                travellerWidth={8}
+                tickFormatter={(ts) => new Date(ts as number).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                onChange={(range) => {
+                  if (range?.startIndex != null && range?.endIndex != null) {
+                    const si = Math.max(0, range.startIndex);
+                    const ei = Math.min(data.length - 1, range.endIndex);
+                    setXDomain([data[si].ts, data[ei].ts]);
+                  }
+                }}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        )}
+      </div>
     </div>
   );
 }
 
-/* ---------------- helpers ---------------- */
+/* ---------- panning / zoom helpers ---------- */
+
+const dragging = { current: null as null | { startX: number; startDomain: [number, number] } };
+
+function handleMouseDown(e: any, xDomain: [number, number] | undefined, setX: Dispatch<SetStateAction<[number, number] | undefined>>) {
+  if (!xDomain || !e || typeof e.activeLabel !== "number") return;
+  dragging.current = { startX: e.activeLabel, startDomain: xDomain };
+}
+function handleMouseMove(e: any, xDomain: [number, number] | undefined, setX: Dispatch<SetStateAction<[number, number] | undefined>>) {
+  if (!dragging.current || !xDomain || !e || typeof e.activeLabel !== "number") return;
+  const { startX, startDomain } = dragging.current;
+  const delta = startX - e.activeLabel;
+  setX([startDomain[0] + delta, startDomain[1] + delta]);
+}
+
+function wheelZoom(e: React.WheelEvent, setX: Dispatch<SetStateAction<[number, number] | undefined>>, domain: [number, number] | undefined, data: Point[]) {
+  if (!domain) return;
+  e.preventDefault();
+  const [a, b] = domain;
+  const center = (a + b) / 2;
+  const factor = e.deltaY > 0 ? 1.15 : 0.85;
+  const half = ((b - a) / 2) * factor;
+  const minTs = data[0]?.ts ?? a;
+  const maxTs = data[data.length - 1]?.ts ?? b;
+  setX([Math.max(minTs, center - half), Math.min(maxTs, center + half)]);
+}
 
 function zoom(
   setX: Dispatch<SetStateAction<[number, number] | undefined>>,
