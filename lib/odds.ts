@@ -3,8 +3,12 @@ const THEODDSAPI_BASE = "https://api.the-odds-api.com/v4";
 
 export const ALLOWED_BOOKS = ["fanduel", "betmgm"];
 export const BOOK_COLORS: Record<string, string> = {
-  fanduel: "#1E90FF", // FD blue
-  betmgm: "#8B4513",  // MGM brown
+  fanduel: "#1E90FF", // blue
+  betmgm: "#8B4513",  // brown
+};
+
+export type OddsApiBookmaker = {
+  key: string; title: string; markets: Array<{ key: string; outcomes: any[] }>;
 };
 
 export async function fetchMlbEvents(): Promise<any[]> {
@@ -16,13 +20,14 @@ export async function fetchMlbEvents(): Promise<any[]> {
 }
 
 /**
- * Player props are only available via the per-event endpoint.
- * We filter at the API level to FanDuel + BetMGM with `bookmakers=`.
- * (When both `bookmakers` and `regions` are present, bookmakers takes precedence.)  */
-export async function fetchMlbEventPlayerHomeRunOdds(eventId: string): Promise<any> {
+ * Player props must be fetched per-event.
+ * markets: comma-joined "batter_home_runs,batter_first_home_run"
+ * bookmakers: filtered to FanDuel + BetMGM
+ */
+export async function fetchMlbEventProps(eventId: string, markets: string[]): Promise<any> {
   const url = new URL(`${THEODDSAPI_BASE}/sports/baseball_mlb/events/${eventId}/odds`);
-  url.searchParams.set("markets", "player_home_run");
-  url.searchParams.set("bookmakers", ALLOWED_BOOKS.join(",")); // FD & MGM only
+  url.searchParams.set("markets", markets.join(","));
+  url.searchParams.set("bookmakers", ALLOWED_BOOKS.join(","));
   url.searchParams.set("oddsFormat", "american");
   url.searchParams.set("dateFormat", "iso");
   url.searchParams.set("apiKey", process.env.THEODDSAPI_KEY!);
