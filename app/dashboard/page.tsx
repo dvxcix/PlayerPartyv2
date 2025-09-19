@@ -52,4 +52,97 @@ export default function DashboardPage() {
   const selectedSummary = useMemo(() => {
     const countPlayers = selectedPlayers.length;
     const countGames = selectedGameIds.length;
-    return `${countPlayers} player${countPlayers === 1 ? "" : "s"} · ${countGames} game${countGames === 1 ? "" :
+    return `${countPlayers} player${countPlayers === 1 ? "" : "s"} · ${countGames} game${countGames === 1 ? "" : "s"}`;
+  }, [selectedPlayers, selectedGameIds]);
+
+  return (
+    <div className="min-h-screen">
+      {/* Top Bar */}
+      <div className="sticky top-0 z-30 bg-white/80 backdrop-blur border-b">
+        <div className="max-w-7xl mx-auto px-4 py-3 flex items-center gap-3">
+          <h1 className="text-lg font-semibold">MLB Odds Dashboard</h1>
+          <span className="text-xs text-gray-500">{selectedSummary}</span>
+          <div className="ml-auto flex items-center gap-2 text-sm">
+            {/* Market switcher */}
+            <div className="flex items-center gap-1">
+              {MARKETS.map((m) => (
+                <button
+                  key={m.key}
+                  className={`px-3 py-1.5 border rounded-md ${market === m.key ? "bg-blue-50 border-blue-300" : "bg-white hover:bg-gray-50"}`}
+                  onClick={() => setMarket(m.key)}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+            {/* Outcome switcher */}
+            <div className="flex items-center gap-1 ml-2">
+              {MARKETS.find((m) => m.key === market)!.outcomes.map((o) => (
+                <button
+                  key={o}
+                  className={`px-3 py-1.5 border rounded-md ${outcome === o ? "bg-blue-50 border-blue-300" : "bg-white hover:bg-gray-50"}`}
+                  onClick={() => setOutcome(o)}
+                >
+                  {o.toUpperCase()}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Body */}
+      <div className="max-w-7xl mx-auto p-4 grid gap-4 lg:grid-cols-3">
+        {/* Left column: games */}
+        <div className="lg:col-span-1 space-y-4">
+          <div className="rounded-2xl border bg-white shadow-sm">
+            <div className="p-3 border-b">
+              <div className="font-medium">Games</div>
+              <div className="text-xs text-gray-500">Pick any games; players from all selected games can be shown together.</div>
+            </div>
+            <div className="p-3">
+              <MultiGamePicker
+                games={games}
+                value={selectedGameIds}
+                onChange={setSelectedGameIds}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Right column: players + chart */}
+        <div className="lg:col-span-2 space-y-4">
+          <div className="rounded-2xl border bg-white shadow-sm">
+            <div className="p-3 border-b">
+              <div className="font-medium">Players</div>
+              <div className="text-xs text-gray-500">Search, select all, or pick specific players across the chosen games.</div>
+            </div>
+            <div className="p-3">
+              <PlayersPanel
+                games={games}
+                selectedGameIds={selectedGameIds}
+                value={selectedPlayers}
+                onChange={setSelectedPlayers}
+              />
+            </div>
+          </div>
+
+          <div className="rounded-2xl border bg-white shadow-sm">
+            <div className="p-3 border-b">
+              <div className="font-medium">Price History — {market === "batter_home_runs" ? "Over/Under 0.5 HR" : "First HR Yes/No"} — {outcome.toUpperCase()}</div>
+              <div className="text-xs text-gray-500">Hover to inspect snapshots; zoom/pan/brush; toggle FD/MGM; export CSV.</div>
+            </div>
+            <div className="p-3">
+              <OddsChart
+                gameIds={selectedGameIds}            // << multiple games
+                players={selectedPlayers}
+                marketKey={market}
+                outcome={outcome}
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
