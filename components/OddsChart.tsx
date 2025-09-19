@@ -13,19 +13,24 @@ import {
   CartesianGrid,
   Brush,
 } from "recharts";
-import { BOOK_COLORS } from "@/lib/odds";
-import { getIdForName, buildHeadshotCandidates } from "@/lib/headshots";
 
 type Player = { player_id: string; full_name: string };
 type MarketKey = "batter_home_runs" | "batter_first_home_run";
 type OutcomeKey = "over" | "under" | "yes" | "no";
 
 type RawRow = {
-  captured_at: string;
+  captured_at: string;        // ISO string
   american_odds: number;
   bookmaker: "fanduel" | "betmgm" | string;
 };
+
 type Point = { captured_at: string; ts: number; [seriesKey: string]: number | string };
+
+// Book colors (FD blue, MGM brown)
+const BOOK_COLORS = {
+  fanduel: "#1E90FF",
+  betmgm: "#8B4513",
+} as const;
 
 const AMERICAN = (n: number) => (n > 0 ? `+${n}` : `${n}`);
 const toImpliedPct = (american: number) =>
@@ -33,21 +38,20 @@ const toImpliedPct = (american: number) =>
 
 // (+) = Over/Yes, (-) = Under/No (UI-only)
 function matchesOutcome(marketKey: MarketKey, outcome: OutcomeKey, american: number) {
-  if (marketKey === "batter_home_runs")
+  if (marketKey === "batter_home_runs") {
     return outcome === "over" ? american >= 0 : outcome === "under" ? american < 0 : true;
+  }
   return outcome === "yes" ? american >= 0 : outcome === "no" ? american < 0 : true;
 }
 
-// Hide extreme/dirty points:
-// - OVER / YES  -> hide if odds > +2500
-// - UNDER / NO  -> hide if odds < -5000
+// Keep the safety filters you wanted on the chart
 function withinThreshold(outcome: OutcomeKey, american: number) {
   if (outcome === "over" || outcome === "yes") return american <= 2500;
   if (outcome === "under" || outcome === "no") return american >= -5000;
   return true;
 }
 
-/** Pan state holder for simple mouse-drag panning */
+// simple pan state
 const dragging = { current: null as null | { startX: number; startDomain: [number, number] } };
 
 export function OddsChart({
@@ -66,9 +70,12 @@ export function OddsChart({
   const [series, setSeries] = useState<Record<string, RawRow[]>>({});
   const [hoverKey, setHoverKey] = useState<string | null>(null);
 
-  // Headshots resolved per player_id (used only for markers; lines render regardless)
-  const [headshotSrc, setHeadshotSrc] = useState<Record<string, string>>({});
-  const [headshotMarkers, setHeadshotMarkers] = useState(true);
+  // UI toggles
+  const [height, setHeight] = useState(560);
+  const [showFD, setShowFD] = useState(true);
+  const [showMGM, setShowMGM] = useState(true);
+  const [showDots, setShowDots] = useState(true);
+  const [smooth, setSmooth] = useState(false);
 
   useEffect(() => setHoverKey(null), [
     players.map((p) => p.player_id).join(","),
@@ -86,10 +93,9 @@ export function OddsChart({
         players.map(async (p) => {
           let rows: RawRow[] = [];
           if (gameIds.length === 0) {
-            const res = await fetch(
-              `/api/players/${p.player_id}/odds?market_key=${marketKey}&t=${Date.now()}`,
-              { cache: "no-store" }
-            );
+            const res = await fetch(`/api/players/${p.player_id}/odds?market_key=${marketKey}&t=${Date.now()}`, {
+              cache: "no-store",
+            });
             const json = await res.json();
             if (json.ok) rows = json.data as RawRow[];
           } else {
@@ -124,44 +130,7 @@ export function OddsChart({
     refreshTick,
   ]);
 
-  // resolve headshot sources (non-blocking for lines)
-  useEffect(() => {
-    let cancelled = false;
-
-    async function resolveOne(fullName: string): Promise<string> {
-      try {
-        const id = await getIdForName(fullName);
-        const candidates = buildHeadshotCandidates(id);
-        // Try candidates with HEAD; pick first that exists. If HEAD fails on provider, fallback to default.
-        for (const url of candidates) {
-          try {
-            const res = await fetch(url, { method: "HEAD", cache: "force-cache" });
-            if (res.ok) return url;
-          } catch {
-            /* try next */
-          }
-        }
-        return "/_default.avif";
-      } catch {
-        return "/_default.avif";
-      }
-    }
-
-    (async () => {
-      const next: Record<string, string> = {};
-      for (const p of players) {
-        next[p.player_id] = await resolveOne(p.full_name);
-        if (cancelled) return;
-      }
-      if (!cancelled) setHeadshotSrc(next);
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [players.map((p) => p.player_id + "|" + p.full_name).join(",")]);
-
-  // merge by timestamp to recharts rows
+  // merge rows by captured_at timestamp into recharts data
   const data: Point[] = useMemo(() => {
     const timeMap: Record<string, Point> = {};
     for (const p of players) {
@@ -175,17 +144,10 @@ export function OddsChart({
     return Object.values(timeMap).sort((a, b) => a.ts - b.ts);
   }, [series, players.map((p) => p.player_id).join(",")]);
 
-  // interactivity / layout
-  const [height, setHeight] = useState(680);
-  const [showFD, setShowFD] = useState(true);
-  const [showMGM, setShowMGM] = useState(true);
-  const [smooth, setSmooth] = useState(false);
-
   // zoom/pan domain
   const tsMin = data.length ? data[0].ts : undefined;
   const tsMax = data.length ? data[data.length - 1].ts : undefined;
   const [xDomain, setXDomain] = useState<[number, number] | undefined>(undefined);
-
   useEffect(() => {
     if (tsMin !== undefined && tsMax !== undefined) setXDomain([tsMin, tsMax]);
   }, [tsMin, tsMax, players.map((p) => p.player_id).join(",")]);
@@ -194,43 +156,9 @@ export function OddsChart({
     () => Object.fromEntries(players.map((p) => [p.player_id, p])),
     [players]
   );
+
   const hasData = data.length > 0;
-
   const fadeIfNotHovered = (key: string) => (hoverKey && hoverKey !== key ? 0.35 : 1);
-
-  // -------- marker renderers (headshot OR classic dot) --------
-  function makeHeadshotDot(seriesKey: string, playerId: string, strokeColor: string) {
-    const size = 16;
-    const r = size / 2;
-    return function DotRenderer(props: any) {
-      const { cx, cy } = props;
-      if (cx == null || cy == null) return null;
-      const src = headshotSrc[playerId] ?? "/_default.avif";
-      const clipId = `clip-${seriesKey}-${Math.round(cx)}-${Math.round(cy)}`;
-      return (
-        <g>
-          <defs>
-            <clipPath id={clipId}>
-              <circle cx={cx} cy={cy} r={r} />
-            </clipPath>
-          </defs>
-          <image
-            href={src}
-            x={cx - r}
-            y={cy - r}
-            width={size}
-            height={size}
-            clipPath={`url(#${clipId})`}
-            preserveAspectRatio="xMidYMid slice"
-          />
-          <circle cx={cx} cy={cy} r={r} fill="none" stroke={strokeColor} strokeWidth={1.6} />
-        </g>
-      );
-    };
-  }
-
-  const classicDot = { r: 2.5 } as const;
-  const headshotActive = { r: 8 } as any; // keeps a generous hover target
 
   return (
     <div className="w-full bg-white rounded-2xl border shadow-sm">
@@ -261,20 +189,13 @@ export function OddsChart({
             <Image src="/miscimg/MGM.png" alt="BetMGM" width={16} height={16} />
             <span>BetMGM</span>
           </label>
-        </div>
-
-        <div className="flex items-center gap-3 pl-2">
           <label className="inline-flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={headshotMarkers}
-              onChange={() => setHeadshotMarkers((v) => !v)}
-            />
-            Headshot markers
+            <input type="checkbox" checked={showDots} onChange={() => setShowDots((v) => !v)} />
+            Dots
           </label>
           <label className="inline-flex items-center gap-2">
             <input type="checkbox" checked={smooth} onChange={() => setSmooth((v) => !v)} />
-            Smooth lines
+            Smooth
           </label>
         </div>
 
@@ -290,7 +211,9 @@ export function OddsChart({
       {/* Chart */}
       <div className="w-full" style={{ height }} onWheel={(e) => wheelZoom(e, setXDomain, xDomain, data)}>
         {!hasData ? (
-          <div className="h-full grid place-items-center text-sm text-gray-500">No snapshots for this selection yet.</div>
+          <div className="h-full grid place-items-center text-sm text-gray-500">
+            No snapshots for this selection yet. Try "Reset" or widen your time range.
+          </div>
         ) : (
           <ResponsiveContainer width="100%" height="100%">
             <LineChart
@@ -306,7 +229,9 @@ export function OddsChart({
                 type="number"
                 domain={xDomain ?? ["auto", "auto"]}
                 scale="time"
-                tickFormatter={(ts) => new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                tickFormatter={(ts) =>
+                  new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                }
                 minTickGap={48}
               />
               <YAxis tickFormatter={(v) => (Number(v) > 0 ? `+${v}` : `${v}`)} width={56} />
@@ -314,13 +239,14 @@ export function OddsChart({
                 isAnimationActive={false}
                 content={({ active, payload, label }) => {
                   if (!active || !payload?.length) return null;
-
                   const ts = typeof label === "number" ? label : Number(label);
                   const row = data.find((d) => d.ts === ts);
 
-                  let item = hoverKey && row && typeof row[hoverKey] === "number"
-                    ? { dataKey: hoverKey, value: row[hoverKey] } as any
-                    : payload.find((p) => typeof p.value === "number");
+                  // Prefer exact hovered series; fallback to any numeric
+                  let item =
+                    hoverKey && row && typeof row[hoverKey] === "number"
+                      ? ({ dataKey: hoverKey, value: row[hoverKey] } as any)
+                      : payload.find((p) => typeof p.value === "number");
                   if (!item) return null;
 
                   const [playerId, bookmaker] = String(item.dataKey).split("__");
@@ -331,7 +257,12 @@ export function OddsChart({
                   return (
                     <div className="rounded-md border bg-white px-3 py-2 shadow-sm text-sm">
                       <div className="mb-1 font-medium">
-                        {d.toLocaleString([], { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                        {d.toLocaleString([], {
+                          month: "short",
+                          day: "2-digit",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
                       </div>
                       <div className="flex items-center justify-between gap-4">
                         <span className="inline-flex items-center gap-2">
@@ -351,13 +282,10 @@ export function OddsChart({
                 }}
               />
 
-              {/* LINES ALWAYS RENDER; markers are optional */}
+              {/* Draw two series per player. Lines ALWAYS render. */}
               {players.map((p) => {
                 const fdKey = `${p.player_id}__fanduel`;
                 const mgmKey = `${p.player_id}__betmgm`;
-                const fdDot = headshotMarkers ? makeHeadshotDot(fdKey, p.player_id, BOOK_COLORS.fanduel) : classicDot;
-                const mgmDot = headshotMarkers ? makeHeadshotDot(mgmKey, p.player_id, BOOK_COLORS.betmgm) : classicDot;
-
                 return (
                   <g key={p.player_id}>
                     <Line
@@ -366,9 +294,17 @@ export function OddsChart({
                       dataKey={fdKey}
                       stroke={BOOK_COLORS.fanduel}
                       strokeWidth={2.3}
-                      strokeOpacity={(!showFD ? 0 : hoverKey && hoverKey !== fdKey ? 0.35 : 1)}
-                      dot={showFD ? (fdDot as any) : false}
-                      activeDot={showFD ? ({ r: 8, onMouseOver: () => setHoverKey(fdKey), onMouseOut: () => setHoverKey(null) } as any) : false}
+                      strokeOpacity={showFD ? (hoverKey && hoverKey !== fdKey ? 0.35 : 1) : 0}
+                      dot={showFD && showDots ? { r: 2.5 } : false}
+                      activeDot={
+                        showFD
+                          ? ({
+                              r: 6,
+                              onMouseOver: () => setHoverKey(fdKey),
+                              onMouseOut: () => setHoverKey(null),
+                            } as any)
+                          : false
+                      }
                       isAnimationActive={false}
                       onMouseOver={() => setHoverKey(fdKey)}
                       onMouseOut={() => setHoverKey(null)}
@@ -379,9 +315,17 @@ export function OddsChart({
                       dataKey={mgmKey}
                       stroke={BOOK_COLORS.betmgm}
                       strokeWidth={2.3}
-                      strokeOpacity={(!showMGM ? 0 : hoverKey && hoverKey !== mgmKey ? 0.35 : 1)}
-                      dot={showMGM ? (mgmDot as any) : false}
-                      activeDot={showMGM ? ({ r: 8, onMouseOver: () => setHoverKey(mgmKey), onMouseOut: () => setHoverKey(null) } as any) : false}
+                      strokeOpacity={showMGM ? (hoverKey && hoverKey !== mgmKey ? 0.35 : 1) : 0}
+                      dot={showMGM && showDots ? { r: 2.5 } : false}
+                      activeDot={
+                        showMGM
+                          ? ({
+                              r: 6,
+                              onMouseOver: () => setHoverKey(mgmKey),
+                              onMouseOut: () => setHoverKey(null),
+                            } as any)
+                          : false
+                      }
                       isAnimationActive={false}
                       onMouseOver={() => setHoverKey(mgmKey)}
                       onMouseOut={() => setHoverKey(null)}
@@ -394,7 +338,12 @@ export function OddsChart({
                 dataKey="ts"
                 height={22}
                 travellerWidth={8}
-                tickFormatter={(ts) => new Date(ts as number).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                tickFormatter={(ts) =>
+                  new Date(ts as number).toLocaleTimeString([], {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })
+                }
                 onChange={(range) => {
                   if (range?.startIndex != null && range?.endIndex != null) {
                     const si = Math.max(0, range.startIndex);
