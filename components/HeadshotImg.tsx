@@ -2,47 +2,31 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useMemo, useState } from "react";
-import { buildHeadshotCandidates, getIdForName } from "@/lib/headshots";
+import { headshotSrcFor } from "@/lib/headshots";
 
 type Props = {
-  fullName: string;
-  // Display sizing:
-  size?: number; // width & height (square)
+  name: string;
+  mlbamId?: string | number | null;
+  size?: number;
   className?: string;
-  rounded?: boolean; // rounded-full avatar
-  priority?: boolean;
+  title?: string;
 };
 
-export function HeadshotImg({ fullName, size = 28, className = "", rounded = true, priority = false }: Props) {
-  const [candidates, setCandidates] = useState<string[]>(["/_default.avif"]);
-  const [idx, setIdx] = useState(0);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const id = await getIdForName(fullName);
-      const list = buildHeadshotCandidates(id);
-      if (!cancelled) {
-        setCandidates(list);
-        setIdx(0);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [fullName]);
-
-  const src = candidates[Math.min(idx, candidates.length - 1)];
-  const radius = rounded ? "rounded-full" : "rounded-md";
-
+export function HeadshotImg({ name, mlbamId, size = 20, className = "", title }: Props) {
+  const src = headshotSrcFor(name, mlbamId);
   return (
     <Image
       src={src}
-      alt={fullName}
+      alt={name}
       width={size}
       height={size}
-      className={`${radius} ${className} object-cover bg-gray-100 border`}
-      onError={() => setIdx((i) => Math.min(i + 1, candidates.length - 1))}
-      priority={priority}
+      className={className}
+      title={title ?? name}
     />
   );
 }
+
+// Also export default so either import style works:
+//   import HeadshotImg from "@/components/HeadshotImg"
+//   import { HeadshotImg } from "@/components/HeadshotImg"
+export default HeadshotImg;
