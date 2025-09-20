@@ -17,10 +17,10 @@ import { BOOK_COLORS } from "@/lib/odds";
 type MarketKey = "batter_home_runs" | "batter_first_home_run";
 type OutcomeKey = "over" | "under" | "yes" | "no";
 
-type PlayerLite = { player_id: string; full_name: string };
+type PlayerLike = { player_id?: string; id?: string; full_name?: string };
 
 type Snapshot = {
-  captured_at: string; // ISO
+  captured_at: string;
   american_odds: number;
   bookmaker: "fanduel" | "betmgm";
 };
@@ -35,7 +35,7 @@ const normBook = (b: string): "fanduel" | "betmgm" | null => {
   return null;
 };
 
-// (+) = Over/Yes, (-) = Under/No (UI-only split)
+// (+) = Over/Yes, (-) = Under/No
 function matchesOutcome(market: MarketKey, outcome: OutcomeKey, american: number) {
   if (market === "batter_home_runs") {
     return outcome === "over" ? american >= 0 : outcome === "under" ? american < 0 : true;
@@ -43,14 +43,17 @@ function matchesOutcome(market: MarketKey, outcome: OutcomeKey, american: number
   return outcome === "yes" ? american >= 0 : outcome === "no" ? american < 0 : true;
 }
 
-// We hide extreme bad data per your rule
+// Bounds filter you requested
 function passBounds(market: MarketKey, outcome: OutcomeKey, american: number) {
   if (market === "batter_home_runs") {
     if (outcome === "over" && american > 2500) return false;
     if (outcome === "under" && american < -5000) return false;
   }
-  // (no special bounds for first HR unless you want them)
   return true;
+}
+
+function getPlayerId(p: PlayerLike) {
+  return (p.player_id ?? p.id ?? "").toString();
 }
 
 async function fetchHistory(playerId: string, gameId: string | undefined, marketKey: MarketKey) {
@@ -61,15 +64,14 @@ async function fetchHistory(playerId: string, gameId: string | undefined, market
   });
   const json = await res.json();
   if (!json?.ok) return [];
-  // Some versions return { ok, data }, others return array directly
-  const rows = Array.isArray(json.data) ? json.data : Array.isArray(json) ? json : [];
-  return (rows as any[])
+  const arr = Array.isArray(json.data) ? json.data : Array.isArray(json) ? json : [];
+  return (arr as any[])
     .map((r) => ({
       captured_at: r.captured_at,
-      american_odds: r.american_odds,
-      bookmaker: normBook(r.bookmaker),
+      american_odds: Number(r.american_odds),
+      bookmaker: normBook(String(r.bookmaker)),
     }))
-    .filter((r) => r.bookmaker);
+    .filter((r) => r.bookmaker && Number.isFinite(r.american_odds));
 }
 
 export function OddsChart({
@@ -80,52 +82,55 @@ export function OddsChart({
   refreshTick,
 }: {
   gameIds: string[];
-  players: PlayerLite[];
+  players: PlayerLike[];
   marketKey: MarketKey;
   outcome: OutcomeKey;
   refreshTick: number;
 }) {
-  const [series, setSeries] = useState<
-    Record<
-      string, // `${player_id}|${book}`
-      Snapshot[]
-    >
-  >({});
+  const [series, setSeries] = useState<Record<string, Snapshot[]>>({}); // key: `${player}|${book}`
 
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
-      // If specific games are selected, we query per (player, game).
-      // If none selected, we query per player (all games).
       const pairs: Array<{ player_id: string; game_id?: string }> = [];
-      if (gameIds.length > 0) {
-        for (const gid of gameIds) {
-          for (const p of players) pairs.push({ player_id: p.player_id, game_id: gid });
-        }
-      } else {
-        for (const p of players) pairs.push({ player_id: p.player_id });
+      if (players.length === 0) {
+        setSeries({});
+        return;
       }
 
-      const out: typeof series = {};
+      // Build (player, game) pairs — if no games selected, query only per player
+      if (gameIds.length > 0) {
+        for (const gid of gameIds) {
+          for (const p of players) {
+            const pid = getPlayerId(p);
+            if (pid) pairs.push({ player_id: pid, game_id: gid });
+          }
+        }
+      } else {
+        for (const p of players) {
+          const pid = getPlayerId(p);
+          if (pid) pairs.push({ player_id: pid });
+        }
+      }
+
+      const acc: Record<string, Snapshot[]> = {};
       for (const item of pairs) {
         const rows = await fetchHistory(item.player_id, item.game_id, marketKey);
         for (const r of rows) {
           if (!matchesOutcome(marketKey, outcome, r.american_odds)) continue;
           if (!passBounds(marketKey, outcome, r.american_odds)) continue;
-
           const key = `${item.player_id}|${r.bookmaker}`;
-          if (!out[key]) out[key] = [];
-          out[key].push(r as Snapshot);
+          (acc[key] ||= []).push(r);
         }
       }
 
-      // sort each by time
-      Object.values(out).forEach((arr) =>
+      // sort each series by time
+      Object.values(acc).forEach((arr) =>
         arr.sort((a, b) => new Date(a.captured_at).getTime() - new Date(b.captured_at).getTime())
       );
 
-      if (!cancelled) setSeries(out);
+      if (!cancelled) setSeries(acc);
     })();
 
     return () => {
@@ -133,25 +138,23 @@ export function OddsChart({
     };
   }, [JSON.stringify(gameIds), JSON.stringify(players), marketKey, outcome, refreshTick]);
 
-  // Flatten to recharts shape: one line per `${player}|${book}`
+  // Flatten into Line components
   const lines = useMemo(() => {
-    const result: { key: string; label: string; book: "fanduel" | "betmgm"; points: any[] }[] = [];
-    for (const [key, rows] of Object.entries(series)) {
-      const [player_id, book] = key.split("|");
+    const out: { key: string; book: "fanduel" | "betmgm"; points: any[] }[] = [];
+    for (const [k, arr] of Object.entries(series)) {
+      const book = k.split("|")[1] as "fanduel" | "betmgm";
       if (book !== "fanduel" && book !== "betmgm") continue;
-      const points = rows.map((r) => ({
-        ts: new Date(r.captured_at).getTime(),
-        american: r.american_odds,
-        implied: toPct(r.american_odds),
-      }));
-      result.push({
-        key,
-        label: `${player_id} (${book === "fanduel" ? "FD" : "MGM"})`,
-        book: book as "fanduel" | "betmgm",
-        points,
+      out.push({
+        key: k,
+        book,
+        points: arr.map((r) => ({
+          ts: new Date(r.captured_at).getTime(),
+          american: r.american_odds,
+          implied: toPct(r.american_odds),
+        })),
       });
     }
-    return result;
+    return out;
   }, [series]);
 
   const empty = lines.length === 0;
@@ -190,9 +193,8 @@ export function OddsChart({
               formatter={(val: any, _name, ctx) => {
                 const n = Number(val);
                 const implied = (toPct(n) * 100).toFixed(1) + "%";
-                const lineMeta = lines.find((L) => ctx?.dataKey?.toString().includes(L.key));
-                const who = lineMeta?.label ?? "";
-                return [`${AMERICAN(n)}  (${implied})`, who];
+                // ctx.payload is a single point; dataKey is "american"
+                return [`${AMERICAN(n)}  (${implied})`, "Odds"];
               }}
             />
             {lines.map((L) => (
@@ -203,10 +205,9 @@ export function OddsChart({
                 dataKey="american"
                 yAxisId="left"
                 dot={false}
-                stroke={BOOK_COLORS[L.book] ?? "#8884d8"}
+                stroke={BOOK_COLORS[L.book] ?? "#1E90FF"}
                 strokeWidth={2}
                 isAnimationActive={false}
-                name={L.label}
               />
             ))}
             <Brush dataKey="ts" height={24} travellerWidth={8} />
