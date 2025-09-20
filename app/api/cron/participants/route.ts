@@ -57,6 +57,135 @@ export async function GET() {
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
     const { startISO, endISO } = getBroadUtcWindow();
 
+    // 1) Fetch games in the window (generic select to be schema-agnostic)
+    const gamesRes = await supabase
+      .from("games")
+      .select("*")
+      .gte("commence_time", startISO)
+      .lt("commence_time", endISO)
+      .order("commence_time", { ascending: true });
+
+    if (gamesRes.error) {
+      return NextResponse.json(
+        { ok: false, error: `Games query failed: ${gamesRes.error.message}` },
+        { status: 500 }
+      );
+    }
+
+    const games = (gamesRes.data ?? []) as AnyRow[];
+    if (!games.length) {
+      return NextResponse.json({
+        ok: true,
+        message: "No games within window.",
+        games: 0,
+        upserts: 0,
+        backfills: 0,
+      });
+    }
+
+    // 2) Cache players once
+    const allPlayersRes = await supabase.from("players").select("*");
+    if (allPlayersRes.error) {
+      return NextResponse.json(
+        { ok: false, error: `Players query failed: ${allPlayersRes.error.message}` },
+        { status: 500 }
+      );
+    }
+    const allPlayers = (allPlayersRes.data ?? []) as AnyRow[];
+
+    let upserts = 0;
+    let backfills = 0;
+
+    for (const g of games) {
+      const gameId = getGameId(g);
+      const home = getTeamCode(g, "home");
+      const away = getTeamCode(g, "away");
+      if (!gameId || !home || !away) continue;
+
+      const teamSet = new Set([...variants(home), ...variants(away)]);
+      const roster = allPlayers.filter((p) => teamSet.has(getPlayerTeamCode(p) ?? "__NO_MATCH__"));
+
+      const rows =
+        roster
+          .map((p) => ({
+            game_id: gameId,
+            player_id: String(p.player_id ?? p.id ?? ""),
+            team_abbr: getPlayerTeamCode(p) ?? home,
+          }))
+          .filter((r) => r.player_id) ?? [];
+
+      if (rows.length) {
+        const ins = await supabase
+          .from("game_participants")
+          .upsert(rows, { onConflict: "game_id,player_id" });
+        if (!ins.error) upserts += rows.length;
+      }
+
+      // 3) Backfill from odds (if any already present)
+      const oddPlayersRes = await supabase
+        .from("odds")
+        .select("player_id")
+        .eq("game_id", gameId);
+      const distinctIds = Array.from(
+        new Set((oddPlayersRes.data ?? []).map((o: AnyRow) => o.player_id).filter(Boolean))
+      ) as string[];
+
+      if (distinctIds.length) {
+        const pRowsRes = await supabase
+          .from("players")
+          .select("*")
+          .in("player_id", distinctIds);
+        const pRows = (pRowsRes.data ?? []) as AnyRow[];
+
+        const backfillRows =
+          pRows.map((pr) => ({
+            game_id: gameId,
+            player_id: String(pr.player_id ?? pr.id),
+            team_abbr: getPlayerTeamCode(pr) ?? home,
+          })) ?? [];
+
+        if (backfillRows.length) {
+          const bf = await supabase
+            .from("game_participants")
+            .upsert(backfillRows, { onConflict: "game_id,player_id" });
+          if (!bf.error) backfills += backfillRows.length;
+        }
+      }
+    }
+
+    return NextResponse.json({
+      ok: true,
+      games: games.length,
+      upserts,
+      backfills,
+      message: "Participants linked for current window.",
+    });
+  } catch (e: any) {
+    return NextResponse.json({ ok: false, error: String(e?.message ?? e) }, { status: 500 });
+  }
+}  return null;
+}
+
+function getPlayerTeamCode(p: AnyRow): string | null {
+  const keys = ["team_abbr", "team_abbreviation", "team", "team_code", "team_short"];
+  for (const k of keys) {
+    const v = p?.[k];
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return null;
+}
+
+function variants(code: string | null | undefined): string[] {
+  if (!code) return [];
+  const c = String(code);
+  return Array.from(new Set([c, c.toUpperCase(), c.toLowerCase()]));
+}
+
+export async function GET() {
+  try {
+    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
+    const { startISO, endISO } = getBroadUtcWindow();
+
     // 1) Fetch games in the window
     const gamesRes = await supabase
       .from("games")
