@@ -10,13 +10,20 @@ import { OddsChart } from "@/components/OddsChart";
 type MarketKey = "batter_home_runs" | "batter_first_home_run";
 type OutcomeKey = "over" | "under" | "yes" | "no";
 
-const MARKETS: { key: MarketKey; label: string; outcomes: OutcomeKey[]; defaultOutcome: OutcomeKey }[] = [
+const MARKETS: {
+  key: MarketKey;
+  label: string;
+  outcomes: OutcomeKey[];
+  defaultOutcome: OutcomeKey;
+}[] = [
   { key: "batter_home_runs", label: "Batter Home Runs (0.5)", outcomes: ["over", "under"], defaultOutcome: "over" },
   { key: "batter_first_home_run", label: "Batter First Home Run", outcomes: ["yes", "no"], defaultOutcome: "yes" },
 ];
 
 export default function DashboardPage() {
   const [games, setGames] = useState<any[]>([]);
+  const [gamesError, setGamesError] = useState<string | null>(null);
+
   const [selectedGameIds, setSelectedGameIds] = useState<string[]>([]);
   const [selectedPlayers, setSelectedPlayers] = useState<{ player_id: string; full_name: string }[]>([]);
   const [market, setMarket] = useState<MarketKey>("batter_home_runs");
@@ -33,9 +40,22 @@ export default function DashboardPage() {
 
   useEffect(() => {
     (async () => {
-      const res = await fetch("/api/games", { cache: "no-store" });
-      const json = await res.json();
-      if (json.ok) setGames(json.games);
+      try {
+        setGamesError(null);
+        const res = await fetch("/api/games", { cache: "no-store" });
+        const json = await res.json();
+        if (json?.ok) {
+          // Some versions returned { ok, data }, older returned { ok, games }
+          const list = json.data ?? json.games ?? [];
+          setGames(Array.isArray(list) ? list : []);
+        } else {
+          setGames([]);
+          setGamesError(json?.error ?? "Failed to load games.");
+        }
+      } catch (e: any) {
+        setGames([]);
+        setGamesError(e?.message ?? String(e));
+      }
     })();
   }, []);
 
@@ -57,7 +77,8 @@ export default function DashboardPage() {
       const res = await fetch("/api/cron/odds", { method: "GET", cache: "no-store" });
       const json = await res.json();
       if (json.ok) {
-        setRefreshMsg(`Refreshed: ${json.snapshots ?? 0} points`);
+        const points = json.snapshotsInserted ?? json.snapshots ?? 0;
+        setRefreshMsg(`Refreshed: ${points} points`);
         setRefreshTick((n) => n + 1);
       } else {
         setRefreshMsg(`Refresh error: ${json.error ?? "Unknown error"}`);
@@ -72,18 +93,12 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* STATIC sticky header (no scroll-hide) */}
+      {/* STATIC sticky header */}
       <div className="sticky top-0 z-30 bg-white border-b">
         <div className="max-w-7xl mx-auto px-4">
           <div className="flex items-center justify-between py-2">
             <div className="flex items-center gap-3">
-              <Image
-                src="/miscimg/playerpartylogo.png"
-                alt="PlayerParty"
-                width={128}
-                height={32}
-                priority
-              />
+              <Image src="/miscimg/playerpartylogo.png" alt="PlayerParty" width={128} height={32} priority />
               <span className="hidden sm:inline text-xs text-gray-500">{selectedSummary}</span>
             </div>
 
@@ -161,7 +176,12 @@ export default function DashboardPage() {
             </div>
             {showGames && (
               <div className="p-3">
-                <MultiGamePicker games={games} value={selectedGameIds} onChange={setSelectedGameIds} />
+                {/* Inline error if games failed */}
+                {gamesError ? (
+                  <div className="text-xs text-red-600">Failed to load games: {gamesError}</div>
+                ) : (
+                  <MultiGamePicker games={games} value={selectedGameIds} onChange={setSelectedGameIds} />
+                )}
               </div>
             )}
           </div>
@@ -197,7 +217,8 @@ export default function DashboardPage() {
         <div className="rounded-2xl border bg-white shadow-sm">
           <div className="p-3 border-b">
             <div className="font-medium">
-              Price History — {market === "batter_home_runs" ? "Over/Under 0.5 HR" : "First HR Yes/No"} — {outcome.toUpperCase()}
+              Price History — {market === "batter_home_runs" ? "Over/Under 0.5 HR" : "First HR Yes/No"} —{" "}
+              {outcome.toUpperCase()}
             </div>
             <div className="text-xs text-gray-500">Hover a line or dot for details. Zoom, pan, brush. Export CSV.</div>
           </div>
