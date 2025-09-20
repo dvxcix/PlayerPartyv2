@@ -25,7 +25,6 @@ type Game = {
   participants?: Participant[];
 };
 
-// YYYY-MM-DD in America/New_York
 function ymdET(iso: string | undefined | null): string | null {
   if (!iso) return null;
   const d = new Date(iso);
@@ -58,7 +57,6 @@ async function fetchGames(): Promise<Game[]> {
     throw new Error(`Non-JSON from /api/games`);
   }
 
-  // Accept { ok:true, data:[…] } (your current shape), or array, or {games:[…]}
   const list: any[] = Array.isArray(json)
     ? json
     : Array.isArray(json?.data)
@@ -67,16 +65,15 @@ async function fetchGames(): Promise<Game[]> {
     ? json.games
     : [];
 
-  if (!Array.isArray(list) || list.length === 0) return [];
+  const today = ymdET(new Date().toISOString());
 
-  const norm: Game[] = list
+  const norm = list
     .filter((g) => g && (g.game_id || g.id) && g.commence_time)
     .map((g) => {
       const game_id = String(g.game_id ?? g.id);
       const home = (g.home_team_abbr ?? g.home_abbr ?? "").toString().toLowerCase();
       const away = (g.away_team_abbr ?? g.away_abbr ?? "").toString().toLowerCase();
-
-      let parts: Participant[] | undefined = undefined;
+      let parts: Participant[] | undefined;
       if (Array.isArray(g.participants)) {
         parts = g.participants.map((p: any) => ({
           player_id: p.player_id ?? p.id ?? p.players?.full_name ?? undefined,
@@ -84,15 +81,18 @@ async function fetchGames(): Promise<Game[]> {
           team_abbr: p.team_abbr ?? undefined,
         }));
       }
-
       return {
         game_id,
         commence_time: g.commence_time,
         home_team_abbr: home || undefined,
         away_team_abbr: away || undefined,
         participants: parts,
-      };
-    });
+      } as Game;
+    })
+    // **Show today only (ET)**
+    .filter((g) => ymdET(g.commence_time) === today)
+    // **Sort by start time asc**
+    .sort((a, b) => new Date(a.commence_time).getTime() - new Date(b.commence_time).getTime());
 
   return norm;
 }
@@ -144,7 +144,6 @@ export default function DashboardPage() {
     return `${countGames} game${countGames === 1 ? "" : "s"} · ${countPlayers} player${countPlayers === 1 ? "" : "s"}`;
   }, [selectedPlayers, selectedGameIds]);
 
-  // Map of game_id -> ET date of that game
   const gameDates = useMemo(() => {
     const map: Record<string, string> = {};
     for (const g of games) {
