@@ -5,8 +5,8 @@ import Image from "next/image";
 
 type Game = {
   game_id: string;
-  home_team_abbr: string; // lowercased by API
-  away_team_abbr: string; // lowercased by API
+  home_team_abbr: string;
+  away_team_abbr: string;
   commence_time?: string | null;
 };
 
@@ -19,34 +19,20 @@ export function MultiGamePicker({
   value: string[];
   onChange: (ids: string[]) => void;
 }) {
-  function toggle(id: string) {
+  const toggle = (id: string) => {
     onChange(value.includes(id) ? value.filter((x) => x !== id) : [...value, id]);
-  }
+  };
 
-  const fmtTime = (iso?: string | null) => {
+  const fmt = (iso?: string | null) => {
     if (!iso) return "";
-    try {
-      const d = new Date(iso);
-      // local short time
-      return d.toLocaleString(undefined, {
-        month: "numeric",
-        day: "numeric",
-        hour: "numeric",
-        minute: "2-digit",
-      });
-    } catch {
-      return "";
-    }
+    const d = new Date(iso);
+    return d.toLocaleString(undefined, { month: "numeric", day: "numeric", hour: "numeric", minute: "2-digit" });
   };
 
-  const logo = (abbr: string) => {
-    const a = (abbr || "").toLowerCase().trim();
-    // All your logos live in /public/logos/{abbr}.png
-    return `/logos/${a}.png`;
-  };
+  const logoSrc = (abbr: string) => `/logos/${(abbr || "").toLowerCase().trim()}.png`;
 
   return (
-    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-1">
+    <div className="space-y-2">
       {games.map((g) => {
         const id = g.game_id;
         const selected = value.includes(id);
@@ -54,50 +40,46 @@ export function MultiGamePicker({
         const away = (g.away_team_abbr || "").toLowerCase();
 
         return (
-          <button
+          <label
             key={id}
-            className={`w-full text-left border rounded-xl px-3 py-2 flex items-center justify-between transition ${
+            className={`flex items-center justify-between w-full border rounded-xl px-3 py-2 cursor-pointer transition ${
               selected ? "border-blue-400 bg-blue-50/50" : "border-gray-200 hover:bg-gray-50"
             }`}
-            onClick={() => toggle(id)}
           >
             <div className="flex items-center gap-3">
+              <input
+                type="checkbox"
+                checked={selected}
+                onChange={() => toggle(id)}
+                className="h-4 w-4 accent-blue-600 cursor-pointer"
+              />
               <div className="flex items-center gap-1">
                 <Image
-                  src={logo(home)}
+                  src={logoSrc(home)}
                   alt={home.toUpperCase()}
                   width={20}
                   height={20}
-                  onError={(e) => {
-                    // fallback to a blank PNG if a team asset is missing
-                    (e.target as HTMLImageElement).src = "/logos/_blank.png";
-                  }}
+                  onError={(e) => ((e.target as HTMLImageElement).src = "/logos/_blank.png")}
                 />
                 <span className="font-medium uppercase">{home}</span>
               </div>
               <span className="text-gray-400">@</span>
               <div className="flex items-center gap-1">
                 <Image
-                  src={logo(away)}
+                  src={logoSrc(away)}
                   alt={away.toUpperCase()}
                   width={20}
                   height={20}
-                  onError={(e) => {
-                    (e.target as HTMLImageElement).src = "/logos/_blank.png";
-                  }}
+                  onError={(e) => ((e.target as HTMLImageElement).src = "/logos/_blank.png")}
                 />
                 <span className="font-medium uppercase">{away}</span>
               </div>
             </div>
-
-            <div className="text-xs text-gray-500">{fmtTime(g.commence_time)}</div>
-          </button>
+            <div className="text-xs text-gray-500">{fmt(g.commence_time)}</div>
+          </label>
         );
       })}
-
-      {games.length === 0 && (
-        <div className="text-xs text-gray-500 px-1 py-2">No games in window. Try Refresh above.</div>
-      )}
+      {games.length === 0 && <div className="text-xs text-gray-500 px-1 py-2">No games for today.</div>}
     </div>
   );
 }
