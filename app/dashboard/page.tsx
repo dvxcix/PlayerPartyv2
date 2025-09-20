@@ -3,7 +3,7 @@
 
 import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
-import MultiGamePicker from "@/components/MultiGamePicker";
+import MultiGamePicker, { type GameInput } from "@/components/MultiGamePicker";
 import PlayersPanel from "@/components/PlayersPanel";
 import OddsChart from "@/components/OddsChart";
 
@@ -76,8 +76,8 @@ export default function DashboardPage() {
     if (def) setOutcome(def);
   }, [market]);
 
-  const games = useMemo(() => {
-    // Only show today's games (UTC date, to match your API’s commence_time)
+  const games: GameInput[] = useMemo(() => {
+    // Only show today's games (UTC date)
     const today = todayYMD_UTC();
     const todays = (gamesRaw ?? []).filter((g) => {
       const ct = g.commence_time;
@@ -90,7 +90,14 @@ export default function DashboardPage() {
       const tb = Date.parse(String(b.commence_time ?? 0));
       return ta - tb;
     });
-    return todays;
+    // normalize so MultiGamePicker can treat game_id as present
+    return todays.map((g) => ({
+      id: g.id ?? g.game_id,
+      game_id: g.game_id ?? g.id,
+      home_team_abbr: g.home_team_abbr,
+      away_team_abbr: g.away_team_abbr,
+      commence_time: g.commence_time,
+    }));
   }, [gamesRaw]);
 
   const selectedSummary = useMemo(() => {
@@ -212,11 +219,7 @@ export default function DashboardPage() {
                 {gamesError ? (
                   <div className="text-sm text-red-600">Failed to load games: {gamesError}</div>
                 ) : (
-                  <MultiGamePicker
-                    games={games}
-                    value={selectedGameIds}
-                    onChange={setSelectedGameIds}
-                  />
+                  <MultiGamePicker games={games} value={selectedGameIds} onChange={setSelectedGameIds} />
                 )}
               </div>
             )}
@@ -239,7 +242,7 @@ export default function DashboardPage() {
             {showPlayers && (
               <div className="p-3">
                 <PlayersPanel
-                  games={games}
+                  games={gamesRaw}
                   selectedGameIds={selectedGameIds}
                   value={selectedPlayers}
                   onChange={setSelectedPlayers}
