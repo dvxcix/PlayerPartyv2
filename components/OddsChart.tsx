@@ -3,14 +3,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  CartesianGrid,
-  Brush,
+  LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Brush,
 } from "recharts";
 import { BOOK_COLORS } from "@/lib/odds";
 
@@ -19,9 +12,9 @@ type OutcomeKey = "over" | "under" | "yes" | "no";
 type PlayerLike = { player_id?: string; id?: string; full_name?: string };
 
 type Snapshot = {
-  captured_at: string;                 // ISO
+  captured_at: string;
   american_odds: number;
-  bookmaker: "fanduel" | "betmgm";     // guaranteed non-null
+  bookmaker: "fanduel" | "betmgm";
 };
 
 const AMERICAN = (n: number) => (n > 0 ? `+${n}` : `${n}`);
@@ -34,7 +27,7 @@ const normBook = (b: string): "fanduel" | "betmgm" | null => {
   return null;
 };
 
-// (+) = Over/Yes, (-) = Under/No
+// UI-only split by sign
 function matchesOutcome(market: MarketKey, outcome: OutcomeKey, american: number) {
   if (market === "batter_home_runs") {
     return outcome === "over" ? american >= 0 : outcome === "under" ? american < 0 : true;
@@ -42,7 +35,7 @@ function matchesOutcome(market: MarketKey, outcome: OutcomeKey, american: number
   return outcome === "yes" ? american >= 0 : outcome === "no" ? american < 0 : true;
 }
 
-// Bounds filter you requested
+// Bounds you requested
 function passBounds(market: MarketKey, outcome: OutcomeKey, american: number) {
   if (market === "batter_home_runs") {
     if (outcome === "over" && american > 2500) return false;
@@ -51,11 +44,9 @@ function passBounds(market: MarketKey, outcome: OutcomeKey, american: number) {
   return true;
 }
 
-function getPlayerId(p: PlayerLike) {
-  return (p.player_id ?? p.id ?? "").toString();
-}
+const getPlayerId = (p: PlayerLike) => (p.player_id ?? p.id ?? "").toString();
 
-async function fetchHistory(
+async function fetchHistoryOnce(
   playerId: string,
   gameId: string | undefined,
   marketKey: MarketKey
@@ -78,14 +69,21 @@ async function fetchHistory(
     const ts = Date.parse(String(r.captured_at));
     if (!book) continue;
     if (!Number.isFinite(ao) || !Number.isFinite(ts)) continue;
-
-    out.push({
-      captured_at: new Date(ts).toISOString(),
-      american_odds: ao,
-      bookmaker: book,
-    });
+    out.push({ captured_at: new Date(ts).toISOString(), american_odds: ao, bookmaker: book });
   }
   return out;
+}
+
+/** Try game-scoped first; if empty and a game was specified, retry unscoped so we still show history. */
+async function fetchHistoryWithFallback(
+  playerId: string,
+  gameId: string | undefined,
+  marketKey: MarketKey
+): Promise<Snapshot[]> {
+  const scoped = await fetchHistoryOnce(playerId, gameId, marketKey);
+  if (scoped.length > 0 || !gameId) return scoped;
+  // fallback: no game_id filter
+  return fetchHistoryOnce(playerId, undefined, marketKey);
 }
 
 export function OddsChart({
@@ -112,7 +110,6 @@ export function OddsChart({
         return;
       }
 
-      // Build (player, game) pairs — if no games selected, query per player only
       const pairs: Array<{ player_id: string; game_id?: string }> = [];
       if (gameIds.length > 0) {
         for (const gid of gameIds) {
@@ -130,9 +127,8 @@ export function OddsChart({
 
       const acc: Record<string, Snapshot[]> = {};
       for (const item of pairs) {
-        const rows = await fetchHistory(item.player_id, item.game_id, marketKey);
+        const rows = await fetchHistoryWithFallback(item.player_id, item.game_id, marketKey);
         for (const r of rows) {
-          // r is already a valid Snapshot (bookmaker guaranteed)
           if (!matchesOutcome(marketKey, outcome, r.american_odds)) continue;
           if (!passBounds(marketKey, outcome, r.american_odds)) continue;
           const key = `${item.player_id}|${r.bookmaker}`;
@@ -140,7 +136,6 @@ export function OddsChart({
         }
       }
 
-      // sort each series by time
       Object.values(acc).forEach((arr) =>
         arr.sort((a, b) => new Date(a.captured_at).getTime() - new Date(b.captured_at).getTime())
       );
