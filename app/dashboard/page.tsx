@@ -10,10 +10,15 @@ import { OddsChart } from "@/components/OddsChart";
 type MarketKey = "batter_home_runs" | "batter_first_home_run";
 type OutcomeKey = "over" | "under" | "yes" | "no";
 
-const MARKETS = [
+const MARKETS: {
+  key: MarketKey;
+  label: string;
+  outcomes: OutcomeKey[];
+  defaultOutcome: OutcomeKey;
+}[] = [
   { key: "batter_home_runs", label: "Batter Home Runs (0.5)", outcomes: ["over", "under"], defaultOutcome: "over" },
   { key: "batter_first_home_run", label: "Batter First Home Run", outcomes: ["yes", "no"], defaultOutcome: "yes" },
-] as const;
+];
 
 function isTodayISO(iso?: string | null) {
   if (!iso) return false;
@@ -31,7 +36,7 @@ export default function DashboardPage() {
 
   const [selectedGameIds, setSelectedGameIds] = useState<string[]>([]);
   const [selectedPlayers, setSelectedPlayers] = useState<{ player_id: string; full_name: string }[]>([]);
-  const [market, setMarket] = useState<"batter_home_runs" | "batter_first_home_run">("batter_home_runs");
+  const [market, setMarket] = useState<MarketKey>("batter_home_runs");
   const [outcome, setOutcome] = useState<OutcomeKey>("over");
 
   const [showGames, setShowGames] = useState(true);
@@ -49,6 +54,7 @@ export default function DashboardPage() {
         const json = await res.json();
         if (json?.ok) {
           const list = (json.data ?? json.games ?? []) as any[];
+          // today only
           const todayOnly = list.filter((g) => isTodayISO(g.commence_time));
           setGames(todayOnly);
         } else {
@@ -64,7 +70,7 @@ export default function DashboardPage() {
 
   useEffect(() => {
     const def = MARKETS.find((m) => m.key === market)?.defaultOutcome;
-    if (def) setOutcome(def as OutcomeKey);
+    if (def) setOutcome(def);
   }, [market]);
 
   const selectedSummary = useMemo(() => {
@@ -73,15 +79,14 @@ export default function DashboardPage() {
     return `${countGames} game${countGames === 1 ? "" : "s"} · ${countPlayers} player${countPlayers === 1 ? "" : "s"}`;
   }, [selectedPlayers, selectedGameIds]);
 
-  // Map: game_id -> 'YYYY-MM-DD' (from commence_time)
+  // Map: game_id -> 'YYYY-MM-DD' based on commence_time
   const gameDates = useMemo(() => {
     const pad = (n: number) => String(n).padStart(2, "0");
     const map: Record<string, string> = {};
     for (const g of games) {
       if (!g?.game_id || !g?.commence_time) continue;
       const d = new Date(g.commence_time);
-      const ds = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-      map[g.game_id] = ds;
+      map[g.game_id] = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
     }
     return map;
   }, [games]);
@@ -92,8 +97,13 @@ export default function DashboardPage() {
       setRefreshMsg(null);
       const res = await fetch("/api/cron/odds", { method: "GET", cache: "no-store" });
       const json = await res.json();
-      setRefreshMsg(json.ok ? `Refreshed: ${json.snapshotsInserted ?? json.snapshots ?? 0} points` : `Refresh error: ${json.error ?? "Unknown error"}`);
-      if (json.ok) setRefreshTick((n) => n + 1);
+      if (json.ok) {
+        const points = json.snapshotsInserted ?? json.snapshots ?? 0;
+        setRefreshMsg(`Refreshed: ${points} points`);
+        setRefreshTick((n) => n + 1);
+      } else {
+        setRefreshMsg(`Refresh error: ${json.error ?? "Unknown error"}`);
+      }
     } catch (e: any) {
       setRefreshMsg(`Refresh error: ${e.message ?? e}`);
     } finally {
@@ -114,6 +124,7 @@ export default function DashboardPage() {
             </div>
 
             <div className="hidden md:flex items-center gap-2">
+              {/* Market */}
               <div className="flex items-center gap-1">
                 {MARKETS.map((m) => (
                   <button
@@ -127,6 +138,7 @@ export default function DashboardPage() {
                   </button>
                 ))}
               </div>
+              {/* Outcome */}
               <div className="flex items-center gap-1">
                 {MARKETS.find((m) => m.key === market)!.outcomes.map((o) => (
                   <button
@@ -223,14 +235,15 @@ export default function DashboardPage() {
         <div className="rounded-2xl border bg-white shadow-sm">
           <div className="p-3 border-b">
             <div className="font-medium">
-              Price History — {market === "batter_home_runs" ? "Over/Under 0.5 HR" : "First HR Yes/No"} — {outcome.toUpperCase()}
+              Price History — {market === "batter_home_runs" ? "Over/Under 0.5 HR" : "First HR Yes/No"} —{" "}
+              {outcome.toUpperCase()}
             </div>
             <div className="text-xs text-gray-500">Hover a line or dot for details. Zoom, pan, brush.</div>
           </div>
           <div className="p-3">
             <OddsChart
               gameIds={selectedGameIds}
-              gameDates={gameDates}   {/* <-- NEW */}
+              gameDates={gameDates}
               players={selectedPlayers}
               marketKey={market}
               outcome={outcome}
