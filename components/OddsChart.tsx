@@ -12,17 +12,19 @@ import {
   CartesianGrid,
   Brush,
 } from "recharts";
+import { createClient } from "@supabase/supabase-js";
 
 type MarketKey = "batter_home_runs" | "batter_first_home_run";
 type OutcomeKey = "over" | "under" | "yes" | "no";
-
 type PlayerLike = { player_id: string; full_name: string };
-type Snapshot = {
+
+type Row = {
   player_id: string;
-  bookmaker: "fanduel" | "betmgm" | string;
+  bookmaker: string;
   american_odds: number;
   captured_at: string; // ISO
-  game_id?: string | null;
+  game_id: string | null;
+  market_key: string | null;
 };
 
 const BOOK_COLORS: Record<string, string> = {
@@ -34,9 +36,11 @@ const AMERICAN = (n: number) => (n > 0 ? `+${n}` : `${n}`);
 const toTs = (iso: string) => new Date(iso).getTime();
 
 function matchesOutcome(marketKey: MarketKey, outcome: OutcomeKey, american: number) {
+  // batter_home_runs: Over => positive odds; Under => negative
   if (marketKey === "batter_home_runs") {
     return outcome === "over" ? american >= 0 : outcome === "under" ? american < 0 : true;
   }
+  // first_home_run: Yes => positive; No => negative
   return outcome === "yes" ? american >= 0 : outcome === "no" ? american < 0 : true;
 }
 function passBounds(marketKey: MarketKey, outcome: OutcomeKey, american: number) {
@@ -61,6 +65,14 @@ function ymdET(iso: string) {
   const day = parts.find((p) => p.type === "day")?.value!;
   return `${y}-${m}-${day}`;
 }
+// rough ET-day start/end (works for current DST; good enough for today-only filter)
+function etDayBounds(ymd: string): { start: string; end: string } {
+  // e.g. "2025-09-20"
+  // EDT is -04:00 in September; if you need full DST-handling later, we can add a tiny tz helper.
+  const start = `${ymd}T00:00:00-04:00`;
+  const end = `${ymd}T23:59:59-04:00`;
+  return { start: new Date(start).toISOString(), end: new Date(end).toISOString() };
+}
 
 export function OddsChart({
   gameIds,
@@ -78,8 +90,13 @@ export function OddsChart({
   refreshTick: number;
 }) {
   const [loading, setLoading] = useState(false);
-  const [rows, setRows] = useState<Snapshot[]>([]);
+  const [rows, setRows] = useState<Row[]>([]);
   const [error, setError] = useState<string | null>(null);
+
+  // Supabase browser client
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const supabaseAnon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+  const supabase = useMemo(() => createClient(supabaseUrl, supabaseAnon), [supabaseUrl, supabaseAnon]);
 
   useEffect(() => {
     let alive = true;
@@ -95,35 +112,50 @@ export function OddsChart({
           return;
         }
 
-        const url = `/api/odds/history?player_ids=${encodeURIComponent(ids.join(","))}&market_key=${encodeURIComponent(
-          marketKey
-        )}`;
-        const res = await fetch(url, { cache: "no-store" });
-        const txt = await res.text();
-        let payload: any;
-        try {
-          payload = JSON.parse(txt);
-        } catch {
-          throw new Error(`Non-JSON from ${url}`);
+        const base = supabase
+          .from("odds_history")
+          .select("player_id,bookmaker,american_odds,captured_at,game_id,market_key")
+          .in("player_id", ids)
+          .in("bookmaker", ["fanduel", "betmgm"])
+          .eq("market_key", marketKey);
+
+        let q = base;
+
+        if (gameIds.length > 0) {
+          // Prefer exact game_id match; in case some rows missed game_id, also allow captured_at falling on those games' ET date(s)
+          const dates = Array.from(new Set(gameIds.map((g) => gameDates[g]).filter(Boolean)));
+          if (dates.length === 0) {
+            q = q.in("game_id", gameIds);
+          } else {
+            // Build an OR across game_id IN (…) OR date windows
+            const ors: string[] = [];
+            ors.push(`game_id.in.(${gameIds.join(",")})`);
+            for (const d of dates) {
+              const { start, end } = etDayBounds(d);
+              ors.push(`and(captured_at.gte.${start},captured_at.lte.${end})`);
+            }
+            q = q.or(ors.join(","));
+          }
+        } else {
+          // No games selected => show only TODAY in ET
+          const today = ymdET(new Date().toISOString());
+          const { start, end } = etDayBounds(today);
+          q = q.gte("captured_at", start).lte("captured_at", end);
         }
 
-        const list: any[] = Array.isArray(payload)
-          ? payload
-          : Array.isArray(payload?.data)
-          ? payload.data
-          : Array.isArray(payload?.rows)
-          ? payload.rows
-          : [];
+        // Pull it
+        const { data, error: e } = await q.order("captured_at", { ascending: true }).limit(5000);
+        if (e) throw e;
 
-        const flat: Snapshot[] = list
-          .map((r) => ({
-            player_id: String(r.player_id ?? r.pid ?? ""),
-            bookmaker: (r.bookmaker ?? r.book ?? "").toString().toLowerCase(),
-            american_odds: Number(r.american_odds ?? r.odds ?? NaN),
-            captured_at: r.captured_at ?? r.ts ?? r.created_at ?? r.time ?? "",
-            game_id: r.game_id ?? r.gid ?? null,
-          }))
-          .filter((r) => r.player_id && r.captured_at && !Number.isNaN(r.american_odds));
+        const flat: Row[] =
+          (data ?? []).map((r: any) => ({
+            player_id: String(r.player_id),
+            bookmaker: String(r.bookmaker ?? "").toLowerCase(),
+            american_odds: Number(r.american_odds),
+            captured_at: r.captured_at,
+            game_id: r.game_id ?? null,
+            market_key: r.market_key ?? null,
+          })) || [];
 
         if (!alive) return;
         setRows(flat);
@@ -137,37 +169,18 @@ export function OddsChart({
     return () => {
       alive = false;
     };
-  }, [JSON.stringify(players), marketKey, refreshTick]);
+  }, [supabase, JSON.stringify(players), JSON.stringify(gameIds), JSON.stringify(gameDates), marketKey, refreshTick]);
 
+  // Fold into Recharts shape
   const data = useMemo(() => {
     if (rows.length === 0) return [];
-    const selected = new Set(gameIds);
-    const keepByGid = selected.size > 0;
-    const selectedDates = new Set<string>(
-      keepByGid ? gameIds.map((gid) => gameDates[gid]).filter(Boolean) : []
-    );
-    const todayET = ymdET(new Date().toISOString());
 
-    const buckets = new Map<string, Snapshot[]>();
-
+    const buckets = new Map<string, Row[]>();
     for (const r of rows) {
       const book = (r.bookmaker || "").toLowerCase();
       if (book !== "fanduel" && book !== "betmgm") continue;
       if (!matchesOutcome(marketKey, outcome, r.american_odds)) continue;
       if (!passBounds(marketKey, outcome, r.american_odds)) continue;
-
-      if (keepByGid) {
-        // Require matching game_id; if missing, allow only if captured date matches one of the selected game ET dates
-        if (r.game_id) {
-          if (!selected.has(r.game_id)) continue;
-        } else {
-          const rDate = ymdET(r.captured_at);
-          if (!selectedDates.has(rDate)) continue;
-        }
-      } else {
-        // No game selected => keep only today ET
-        if (ymdET(r.captured_at) !== todayET) continue;
-      }
 
       const key = `${r.player_id}|${book}`;
       if (!buckets.has(key)) buckets.set(key, []);
@@ -175,14 +188,13 @@ export function OddsChart({
     }
 
     const lines: { key: string; pts: { ts: number; y: number }[] }[] = [];
-
     for (const [key, arr] of buckets) {
       arr.sort((a, b) => toTs(a.captured_at) - toTs(b.captured_at));
       const pts = arr.map((r) => ({ ts: toTs(r.captured_at), y: r.american_odds }));
-      lines.push({ key, pts });
+      if (pts.length) lines.push({ key, pts });
     }
 
-    if (lines.length === 0) return [];
+    if (!lines.length) return [];
 
     const allTs = Array.from(new Set(lines.flatMap((l) => l.pts.map((p) => p.ts)))).sort((a, b) => a - b);
     return allTs.map((ts) => {
@@ -193,7 +205,7 @@ export function OddsChart({
       }
       return row;
     });
-  }, [rows, gameIds, gameDates, marketKey, outcome]);
+  }, [rows, marketKey, outcome]);
 
   const series = useMemo(() => {
     const map = new Map<string, { key: string; stroke: string }>();
@@ -211,7 +223,7 @@ export function OddsChart({
       {!players.length ? (
         <div className="text-xs text-gray-500">Select one or more players to see price history.</div>
       ) : error ? (
-        <div className="text-xs text-red-600">Error: {error}</div>
+        <div className="text-xs text-red-600 break-words">Error: {error}</div>
       ) : loading ? (
         <div className="text-xs text-gray-500">Loading…</div>
       ) : !hasData ? (
