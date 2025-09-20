@@ -2,9 +2,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import {
-  LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Brush,
-} from "recharts";
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Brush } from "recharts";
 import { BOOK_COLORS } from "@/lib/odds";
 
 type MarketKey = "batter_home_runs" | "batter_first_home_run";
@@ -27,7 +25,6 @@ const normBook = (b: string): "fanduel" | "betmgm" | null => {
   return null;
 };
 
-// UI-only split by sign
 function matchesOutcome(market: MarketKey, outcome: OutcomeKey, american: number) {
   if (market === "batter_home_runs") {
     return outcome === "over" ? american >= 0 : outcome === "under" ? american < 0 : true;
@@ -35,7 +32,6 @@ function matchesOutcome(market: MarketKey, outcome: OutcomeKey, american: number
   return outcome === "yes" ? american >= 0 : outcome === "no" ? american < 0 : true;
 }
 
-// Bounds you requested
 function passBounds(market: MarketKey, outcome: OutcomeKey, american: number) {
   if (market === "batter_home_runs") {
     if (outcome === "over" && american > 2500) return false;
@@ -45,8 +41,13 @@ function passBounds(market: MarketKey, outcome: OutcomeKey, american: number) {
 }
 
 const getPlayerId = (p: PlayerLike) => (p.player_id ?? p.id ?? "").toString();
+const ymd = (iso: string) => {
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+};
 
-async function fetchHistoryOnce(
+async function fetchHistory(
   playerId: string,
   gameId: string | undefined,
   marketKey: MarketKey
@@ -74,26 +75,16 @@ async function fetchHistoryOnce(
   return out;
 }
 
-/** Try game-scoped first; if empty and a game was specified, retry unscoped so we still show history. */
-async function fetchHistoryWithFallback(
-  playerId: string,
-  gameId: string | undefined,
-  marketKey: MarketKey
-): Promise<Snapshot[]> {
-  const scoped = await fetchHistoryOnce(playerId, gameId, marketKey);
-  if (scoped.length > 0 || !gameId) return scoped;
-  // fallback: no game_id filter
-  return fetchHistoryOnce(playerId, undefined, marketKey);
-}
-
 export function OddsChart({
   gameIds,
+  gameDates, // game_id -> 'YYYY-MM-DD' from commence_time
   players,
   marketKey,
   outcome,
   refreshTick,
 }: {
   gameIds: string[];
+  gameDates: Record<string, string>;
   players: PlayerLike[];
   marketKey: MarketKey;
   outcome: OutcomeKey;
@@ -126,9 +117,25 @@ export function OddsChart({
       }
 
       const acc: Record<string, Snapshot[]> = {};
+
       for (const item of pairs) {
-        const rows = await fetchHistoryWithFallback(item.player_id, item.game_id, marketKey);
-        for (const r of rows) {
+        const rows = await fetchHistory(item.player_id, item.game_id, marketKey);
+
+        let usable = rows;
+
+        // If a specific game is selected, **do not** fallback to unscoped history.
+        // Instead, constrain rows to that game's date to avoid yesterday’s series data.
+        if (item.game_id) {
+          const targetDate = gameDates[item.game_id]; // 'YYYY-MM-DD'
+          if (targetDate) {
+            usable = rows.filter((r) => ymd(r.captured_at) === targetDate);
+          }
+        }
+
+        // If no games are selected AND nothing came back, allow unscoped (already unscoped in that case).
+        // (We only called scoped when item.game_id existed.)
+
+        for (const r of usable) {
           if (!matchesOutcome(marketKey, outcome, r.american_odds)) continue;
           if (!passBounds(marketKey, outcome, r.american_odds)) continue;
           const key = `${item.player_id}|${r.bookmaker}`;
@@ -146,7 +153,7 @@ export function OddsChart({
     return () => {
       cancelled = true;
     };
-  }, [JSON.stringify(gameIds), JSON.stringify(players), marketKey, outcome, refreshTick]);
+  }, [JSON.stringify(gameIds), JSON.stringify(players), JSON.stringify(gameDates), marketKey, outcome, refreshTick]);
 
   const lines = useMemo(() => {
     const out: { key: string; book: "fanduel" | "betmgm"; points: { ts: number; american: number; implied: number }[] }[] =
@@ -184,12 +191,7 @@ export function OddsChart({
                 new Date(t).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
               }
             />
-            <YAxis
-              yAxisId="left"
-              orientation="left"
-              tickFormatter={(n) => AMERICAN(n as number)}
-              domain={["auto", "auto"]}
-            />
+            <YAxis yAxisId="left" orientation="left" tickFormatter={(n) => AMERICAN(n as number)} domain={["auto", "auto"]} />
             <Tooltip
               labelFormatter={(ts) =>
                 new Date(Number(ts)).toLocaleString(undefined, {
