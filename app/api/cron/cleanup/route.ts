@@ -40,7 +40,6 @@ export async function GET(req: Request) {
 
     const url = new URL(req.url);
     const force = url.searchParams.get("force") === "1";
-
     if (!force && !isPastMidnightET(1)) {
       return NextResponse.json({ ok: true, skipped: "Not past 12:01am ET" });
     }
@@ -48,33 +47,30 @@ export async function GET(req: Request) {
     const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { persistSession: false } });
     const today = todayET();
 
+    // IMPORTANT: repeat the CTE for each statement
     const sql = `
       with params as (select to_date($1, 'YYYY-MM-DD')::date as today)
-      -- 1) odds_history
       delete from odds_history
-      using params
-      where (timezone('America/New_York', captured_at))::date < params.today;
+      where (timezone('America/New_York', captured_at))::date < (select today from params);
 
-      -- 2) odds
+      with params as (select to_date($1, 'YYYY-MM-DD')::date as today)
       delete from odds
-      using params
-      where (timezone('America/New_York', created_at))::date < params.today;
+      where (timezone('America/New_York', created_at))::date < (select today from params);
 
-      -- 3) game_participants (by parent's commence_time)
+      with params as (select to_date($1, 'YYYY-MM-DD')::date as today)
       delete from game_participants
-      using params
       where game_id in (
-        select g.game_id from games g, params
-        where (timezone('America/New_York', g.commence_time))::date < params.today
+        select g.game_id
+        from games g, params
+        where (timezone('America/New_York', g.commence_time))::date < (select today from params)
       );
 
-      -- 4) games
+      with params as (select to_date($1, 'YYYY-MM-DD')::date as today)
       delete from games
-      using params
-      where (timezone('America/New_York', games.commence_time))::date < params.today;
+      where (timezone('America/New_York', games.commence_time))::date < (select today from params);
     `;
 
-    // Requires the helper function below to exist once in your DB:
+    // Requires one-time DB helper:
     // create or replace function exec_sql(sql_text text, params text[] default null)
     // returns void language plpgsql as $$
     // declare _p1 text; begin
