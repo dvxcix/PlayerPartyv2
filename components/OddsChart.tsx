@@ -32,7 +32,7 @@ function matchesOutcome(market: MarketKey, outcome: OutcomeKey, american: number
   return outcome === "yes" ? american >= 0 : outcome === "no" ? american < 0 : true;
 }
 
-// Bounds you requested for HR market
+// Bounds for HR market
 function passBounds(market: MarketKey, outcome: OutcomeKey, american: number) {
   if (market === "batter_home_runs") {
     if (outcome === "over" && american > 2500) return false;
@@ -43,7 +43,7 @@ function passBounds(market: MarketKey, outcome: OutcomeKey, american: number) {
 
 const getPlayerId = (p: PlayerLike) => (p.player_id ?? p.id ?? "").toString();
 
-// Market alias sets (some APIs/rows may use slight variants)
+// Market alias sets (some rows may use slight variants)
 const MARKET_ALIASES: Record<MarketKey, string[]> = {
   batter_home_runs: ["batter_home_runs", "batter_home_run", "player_home_run"],
   batter_first_home_run: ["batter_first_home_run", "first_home_run"],
@@ -81,10 +81,10 @@ async function fetchStrict(
       const rows = await fetchOdds(playerId, mk, gameId);
       if (rows.length) return rows;
     }
-    return []; // strict: no game → no data
+    return []; // strict: no rows for this game_id
   }
 
-  // No games selected → unscoped history (useful for exploratory view)
+  // No games selected → unscoped history (exploratory)
   for (const mk of aliases) {
     const rows = await fetchOdds(playerId, mk, undefined);
     if (rows.length) return rows;
@@ -94,12 +94,15 @@ async function fetchStrict(
 
 export function OddsChart({
   gameIds,
+  // Accept optional gameDates for compatibility with the caller; not used in strict mode.
+  gameDates,
   players,
   marketKey,
   outcome,
   refreshTick,
 }: {
   gameIds: string[];
+  gameDates?: Record<string, string>;
   players: PlayerLike[];
   marketKey: MarketKey;
   outcome: OutcomeKey;
@@ -153,6 +156,7 @@ export function OddsChart({
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [JSON.stringify(gameIds), JSON.stringify(players), marketKey, outcome, refreshTick]);
 
   const lines = useMemo(() => {
