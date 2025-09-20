@@ -33,29 +33,21 @@ const BOOK_COLORS: Record<string, string> = {
 const AMERICAN = (n: number) => (n > 0 ? `+${n}` : `${n}`);
 const toTs = (iso: string) => new Date(iso).getTime();
 
-// Decide if a row belongs to requested outcome (UI rule: + = Over/Yes, - = Under/No)
 function matchesOutcome(marketKey: MarketKey, outcome: OutcomeKey, american: number) {
   if (marketKey === "batter_home_runs") {
     return outcome === "over" ? american >= 0 : outcome === "under" ? american < 0 : true;
   }
-  // first home run: yes/no
   return outcome === "yes" ? american >= 0 : outcome === "no" ? american < 0 : true;
 }
-
-// Hard bounds to hide data errors (you asked for these)
 function passBounds(marketKey: MarketKey, outcome: OutcomeKey, american: number) {
-  // Over HR: hide if > +2500
   if (marketKey === "batter_home_runs" && (outcome === "over" || outcome === "yes")) {
     if (american > 2500) return false;
   }
-  // Under HR: hide if < -5000
   if (marketKey === "batter_home_runs" && (outcome === "under" || outcome === "no")) {
     if (american < -5000) return false;
   }
   return true;
 }
-
-// YYYY-MM-DD ET for a timestamp
 function ymdET(iso: string) {
   const d = new Date(iso);
   const parts = new Intl.DateTimeFormat("en-US", {
@@ -79,7 +71,7 @@ export function OddsChart({
   refreshTick,
 }: {
   gameIds: string[];
-  gameDates: Record<string, string>; // game_id -> YYYY-MM-DD (ET) of the GAME
+  gameDates: Record<string, string>; // game_id -> YYYY-MM-DD (ET)
   players: PlayerLike[];
   marketKey: MarketKey;
   outcome: OutcomeKey;
@@ -89,7 +81,6 @@ export function OddsChart({
   const [rows, setRows] = useState<Snapshot[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  // Fetch odds history for selected players (front-end only; tolerant to shapes)
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -104,7 +95,6 @@ export function OddsChart({
           return;
         }
 
-        // Use your existing history API; accept {ok:true,data:[…]} or plain array
         const url = `/api/odds/history?player_ids=${encodeURIComponent(ids.join(","))}&market_key=${encodeURIComponent(
           marketKey
         )}`;
@@ -114,7 +104,7 @@ export function OddsChart({
         try {
           payload = JSON.parse(txt);
         } catch {
-          throw new Error(`Non-JSON from ${url}: ${txt.slice(0, 200)}`);
+          throw new Error(`Non-JSON from ${url}`);
         }
 
         const list: any[] = Array.isArray(payload)
@@ -149,32 +139,33 @@ export function OddsChart({
     };
   }, [JSON.stringify(players), marketKey, refreshTick]);
 
-  // Build series per (player_id, bookmaker), BUT:
-  // - If gameIds selected => STRICTLY keep snapshots whose row.game_id is IN that set.
-  // - If no game selected => keep ONLY snapshots that occur on "today ET".
   const data = useMemo(() => {
     if (rows.length === 0) return [];
     const selected = new Set(gameIds);
     const keepByGid = selected.size > 0;
-
-    // If no game selected, determine "today ET"
+    const selectedDates = new Set<string>(
+      keepByGid ? gameIds.map((gid) => gameDates[gid]).filter(Boolean) : []
+    );
     const todayET = ymdET(new Date().toISOString());
 
-    // group: key = `${player_id}|${bookmaker}`
     const buckets = new Map<string, Snapshot[]>();
 
     for (const r of rows) {
       const book = (r.bookmaker || "").toLowerCase();
       if (book !== "fanduel" && book !== "betmgm") continue;
-
       if (!matchesOutcome(marketKey, outcome, r.american_odds)) continue;
       if (!passBounds(marketKey, outcome, r.american_odds)) continue;
 
       if (keepByGid) {
-        // require matching game_id
-        if (!r.game_id || !selected.has(r.game_id)) continue;
+        // Require matching game_id; if missing, allow only if captured date matches one of the selected game ET dates
+        if (r.game_id) {
+          if (!selected.has(r.game_id)) continue;
+        } else {
+          const rDate = ymdET(r.captured_at);
+          if (!selectedDates.has(rDate)) continue;
+        }
       } else {
-        // no games selected ⇒ same-day ET only
+        // No game selected => keep only today ET
         if (ymdET(r.captured_at) !== todayET) continue;
       }
 
@@ -183,28 +174,18 @@ export function OddsChart({
       buckets.get(key)!.push(r);
     }
 
-    // Sort each bucket by time and convert to recharts rows
-    // use a union timeline across all series
-    const lines: { key: string; pts: { ts: number; y: number; player_id: string; book: string; captured_at: string }[] }[] =
-      [];
+    const lines: { key: string; pts: { ts: number; y: number }[] }[] = [];
 
     for (const [key, arr] of buckets) {
       arr.sort((a, b) => toTs(a.captured_at) - toTs(b.captured_at));
-      const pts = arr.map((r) => ({
-        ts: toTs(r.captured_at),
-        y: r.american_odds,
-        player_id: r.player_id,
-        book: (r.bookmaker || "").toLowerCase(),
-        captured_at: r.captured_at,
-      }));
+      const pts = arr.map((r) => ({ ts: toTs(r.captured_at), y: r.american_odds }));
       lines.push({ key, pts });
     }
 
     if (lines.length === 0) return [];
 
-    // Merge by timestamp: one row per time with columns per series
     const allTs = Array.from(new Set(lines.flatMap((l) => l.pts.map((p) => p.ts)))).sort((a, b) => a - b);
-    const rowsOut = allTs.map((ts) => {
+    return allTs.map((ts) => {
       const row: any = { ts, x: new Date(ts).toISOString() };
       for (const line of lines) {
         const p = line.pts.find((pt) => pt.ts === ts);
@@ -212,11 +193,9 @@ export function OddsChart({
       }
       return row;
     });
-    return rowsOut;
-  }, [rows, gameIds, marketKey, outcome]);
+  }, [rows, gameIds, gameDates, marketKey, outcome]);
 
   const series = useMemo(() => {
-    // Titles like "Player (FD)" and "Player (MGM)" — UI legend is off, tooltip shows details on hover
     const map = new Map<string, { key: string; stroke: string }>();
     for (const p of players) {
       map.set(`${p.player_id}|fanduel`, { key: `${p.player_id}|fanduel`, stroke: BOOK_COLORS.fanduel });
@@ -248,11 +227,7 @@ export function OddsChart({
                 new Date(x).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })
               }
             />
-            <YAxis
-              domain={["auto", "auto"]}
-              tickFormatter={(n: number) => AMERICAN(n)}
-              width={52}
-            />
+            <YAxis domain={["auto", "auto"]} tickFormatter={(n: number) => AMERICAN(n)} width={52} />
             <Tooltip
               formatter={(val: any, name: string) => [AMERICAN(val as number), name.split("|")[1].toUpperCase()]}
               labelFormatter={(x) =>
