@@ -3,102 +3,54 @@
 
 import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
-import MultiGamePicker, { type GameInput } from "@/components/MultiGamePicker";
+import MultiGamePicker, { Game } from "@/components/MultiGamePicker";
 import PlayersPanel from "@/components/PlayersPanel";
 import OddsChart from "@/components/OddsChart";
 
 type MarketKey = "batter_home_runs" | "batter_first_home_run";
 type OutcomeKey = "over" | "under" | "yes" | "no";
-type PlayerLike = { player_id: string; full_name: string };
-
-type ApiGame = {
-  id?: string;
-  game_id?: string;
-  home_team_abbr?: string;
-  away_team_abbr?: string;
-  commence_time?: string; // ISO
-  status?: string | null;
-  participants?: Array<{ player_id: string; team_abbr?: string; players?: { full_name?: string } }>;
-};
+type PlayerMin = { player_id: string; full_name: string };
 
 const MARKETS: { key: MarketKey; label: string; outcomes: OutcomeKey[]; defaultOutcome: OutcomeKey }[] = [
   { key: "batter_home_runs", label: "Batter Home Runs (0.5)", outcomes: ["over", "under"], defaultOutcome: "over" },
   { key: "batter_first_home_run", label: "Batter First Home Run", outcomes: ["yes", "no"], defaultOutcome: "yes" },
 ];
 
-function toYMD(dateIso: string): string {
-  const d = new Date(dateIso);
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
-}
-
-function todayYMD_UTC(): string {
-  const d = new Date();
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
-}
-
 export default function DashboardPage() {
-  const [gamesRaw, setGamesRaw] = useState<ApiGame[]>([]);
-  const [gamesError, setGamesError] = useState<string | null>(null);
-
+  const [games, setGames] = useState<Game[]>([]);
+  const [gamesErr, setGamesErr] = useState<string | null>(null);
   const [selectedGameIds, setSelectedGameIds] = useState<string[]>([]);
-  const [selectedPlayers, setSelectedPlayers] = useState<PlayerLike[]>([]);
-
+  const [selectedPlayers, setSelectedPlayers] = useState<PlayerMin[]>([]);
   const [market, setMarket] = useState<MarketKey>("batter_home_runs");
   const [outcome, setOutcome] = useState<OutcomeKey>("over");
 
+  // Panels
   const [showGames, setShowGames] = useState(true);
   const [showPlayers, setShowPlayers] = useState(true);
 
+  // Refresh
   const [refreshing, setRefreshing] = useState(false);
   const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
 
-  // Load games from API
   useEffect(() => {
     (async () => {
       try {
-        setGamesError(null);
+        setGamesErr(null);
         const res = await fetch("/api/games", { cache: "no-store" });
         const json = await res.json();
-        if (!json || json.ok !== true || !Array.isArray(json.data)) {
-          throw new Error("No games array in response");
-        }
-        setGamesRaw(json.data as ApiGame[]);
+        if (json?.ok && Array.isArray(json.data)) setGames(json.data);
+        else setGamesErr(`Failed to load games: ${json?.error ?? "Unknown error"}`);
       } catch (e: any) {
-        setGamesError(e?.message ?? String(e));
+        setGamesErr(`Failed to load games: ${e?.message ?? e}`);
       }
     })();
   }, []);
 
-  // reset outcome when market changes
   useEffect(() => {
     const def = MARKETS.find((m) => m.key === market)?.defaultOutcome;
     if (def) setOutcome(def);
   }, [market]);
-
-  const games: GameInput[] = useMemo(() => {
-    // Only show today's games (UTC date)
-    const today = todayYMD_UTC();
-    const todays = (gamesRaw ?? []).filter((g) => {
-      const ct = g.commence_time;
-      if (!ct) return false;
-      return toYMD(ct) === today;
-    });
-    // sort by commence time
-    todays.sort((a, b) => {
-      const ta = Date.parse(String(a.commence_time ?? 0));
-      const tb = Date.parse(String(b.commence_time ?? 0));
-      return ta - tb;
-    });
-    // normalize so MultiGamePicker can treat game_id as present
-    return todays.map((g) => ({
-      id: g.id ?? g.game_id,
-      game_id: g.game_id ?? g.id,
-      home_team_abbr: g.home_team_abbr,
-      away_team_abbr: g.away_team_abbr,
-      commence_time: g.commence_time,
-    }));
-  }, [gamesRaw]);
 
   const selectedSummary = useMemo(() => {
     const countPlayers = selectedPlayers.length;
@@ -128,7 +80,7 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Header */}
+      {/* STATIC header */}
       <div className="sticky top-0 z-30 bg-white border-b">
         <div className="max-w-7xl mx-auto px-4">
           <div className="flex items-center justify-between py-2">
@@ -198,13 +150,12 @@ export default function DashboardPage() {
 
       {/* Content */}
       <div className="max-w-7xl mx-auto px-4 py-6 space-y-6">
-        {/* Collapsible Controls */}
         <div className="grid gap-4 lg:grid-cols-2">
           {/* Games */}
           <div className="rounded-2xl border bg-white shadow-sm">
             <div className="p-3 border-b flex items-center justify-between">
               <div>
-                <div className="font-medium">Games (Today Only)</div>
+                <div className="font-medium">Games</div>
                 <div className="text-xs text-gray-500">Pick any games; compare players across them.</div>
               </div>
               <button
@@ -215,9 +166,9 @@ export default function DashboardPage() {
               </button>
             </div>
             {showGames && (
-              <div className="p-3 max-h-80 overflow-auto">
-                {gamesError ? (
-                  <div className="text-sm text-red-600">Failed to load games: {gamesError}</div>
+              <div className="p-3">
+                {gamesErr ? (
+                  <div className="text-sm text-red-600">{gamesErr}</div>
                 ) : (
                   <MultiGamePicker games={games} value={selectedGameIds} onChange={setSelectedGameIds} />
                 )}
@@ -242,7 +193,6 @@ export default function DashboardPage() {
             {showPlayers && (
               <div className="p-3">
                 <PlayersPanel
-                  games={gamesRaw}
                   selectedGameIds={selectedGameIds}
                   value={selectedPlayers}
                   onChange={setSelectedPlayers}
@@ -256,9 +206,9 @@ export default function DashboardPage() {
         <div className="rounded-2xl border bg-white shadow-sm">
           <div className="p-3 border-b">
             <div className="font-medium">
-              Odds History — {market === "batter_home_runs" ? "Over/Under 0.5 HR" : "First HR Yes/No"} — {outcome.toUpperCase()}
+              Price History — {market === "batter_home_runs" ? "Over/Under 0.5 HR" : "First HR Yes/No"} — {outcome.toUpperCase()}
             </div>
-            <div className="text-xs text-gray-500">Hover a line for details. Zoom, pan, brush.</div>
+            <div className="text-xs text-gray-500">Hover a line or dot for details. Zoom, pan, brush. Export CSV.</div>
           </div>
           <div className="p-3">
             <OddsChart
