@@ -1,121 +1,232 @@
 // app/api/cron/odds/route.ts
 import { NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import {
-  fetchMlbEventProps,
-  americanToDecimal,
-  normalizeTeamAbbr,
-  ALLOWED_BOOKS,
-} from "@/lib/odds";
+import { createClient } from "@supabase/supabase-js";
 
-export const dynamic = "force-dynamic";
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE!;
+const THEODDSAPI_KEY = process.env.THEODDSAPI_KEY!;
+const BOOKS = ["fanduel", "betmgm"] as const;
+const SPORT = "baseball_mlb";
 
-// Ingest these two markets (FD/MGM only)
-const TARGET_MARKETS = ["batter_home_runs", "batter_first_home_run"] as const;
-type TargetMarket = typeof TARGET_MARKETS[number];
+type BookKey = (typeof BOOKS)[number];
 
-async function ensureMarkets() {
-  const rows = TARGET_MARKETS.map((k) => ({
-    market_key: k,
-    description:
-      k === "batter_home_runs"
-        ? "Batter home runs (Over/Under)"
-        : "Batter first home run (Yes/No)",
-  }));
-  const { error } = await supabaseAdmin
-    .from("markets")
-    .upsert(rows, { onConflict: "market_key" });
-  if (error) throw error;
+type OddsAPIPrice = {
+  price: number; // american odds number (can be negative)
+  point?: number | null; // for OU markets
+};
+
+type OddsAPIOutcome = {
+  name: string; // player name or "Over"/"Under"/"Yes"/"No" context-dependent
+  description?: string | null; // TheOddsAPI uses description for player name on player props
+  price: number; // american odds
+  point?: number | null;
+};
+
+type OddsAPIMarket = {
+  key: "batter_home_runs" | "batter_first_home_run";
+  outcomes: OddsAPIOutcome[];
+};
+
+type OddsAPIBookmaker = {
+  key: string; // "fanduel", "betmgm", etc.
+  markets: OddsAPIMarket[];
+};
+
+type OddsAPIEvent = {
+  id: string; // event id
+  bookmakers: OddsAPIBookmaker[];
+};
+
+function isBookWanted(key: string): key is BookKey {
+  const s = key.toLowerCase().replace(/[\s_-]+/g, "");
+  if (s === "fanduel") return true;
+  if (s === "betmgm" || s === "mgm") return true;
+  return false;
+}
+
+// Return ET midnight start/end ISO for “today”
+function getETDayRange() {
+  const tz = "America/New_York";
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  })
+    .formatToParts(now)
+    .reduce<Record<string, string>>((acc, p) => {
+      if (p.type !== "literal") acc[p.type] = p.value;
+      return acc;
+    }, {});
+  const yyyy = Number(parts.year);
+  const mm = Number(parts.month);
+  const dd = Number(parts.day);
+  const start = new Date(Date.UTC(yyyy, mm - 1, dd, 0, 0, 0));
+  const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+  const toISO = (d: Date) => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString();
+  return { startISO: toISO(start), endISO: toISO(end) };
 }
 
 export async function GET() {
-  try {
-    // Make sure FK targets exist BEFORE we write odds/odds_history
-    await ensureMarkets();
+  if (!THEODDSAPI_KEY) {
+    return NextResponse.json({ ok: false, error: "Missing THEODDSAPI_KEY" }, { status: 500 });
+  }
 
-    // Pull games in a +/- window to cover today's slate
-    const now = new Date();
-    const start = new Date(now.getTime() - 12 * 60 * 60 * 1000).toISOString();
-    const end   = new Date(now.getTime() + 36 * 60 * 60 * 1000).toISOString();
+  const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
+  const { startISO, endISO } = getETDayRange();
 
-    const { data: games, error: gErr } = await supabaseAdmin
-      .from("games")
-      .select("game_id, commence_time, home_team, away_team")
-      .gte("commence_time", start)
-      .lte("commence_time", end)
-      .order("commence_time");
-    if (gErr) throw gErr;
+  // 1) Pull only TODAY’s games from DB
+  const { data: games, error: gErr } = await supabase
+    .from("games")
+    .select("game_id, commence_time")
+    .gte("commence_time", startISO)
+    .lt("commence_time", endISO)
+    .order("commence_time", { ascending: true });
 
-    let upserts = 0, snapshots = 0, newPlayers = 0, emptyEvents = 0;
+  if (gErr) {
+    return NextResponse.json({ ok: false, error: `Games query failed: ${gErr.message}` }, { status: 500 });
+  }
 
-    for (const g of games ?? []) {
-      // Hit per-event endpoint for BOTH markets; filter to FanDuel + BetMGM at the API level
-      const payload = await fetchMlbEventProps(g.game_id, TARGET_MARKETS as unknown as string[]);
+  if (!games?.length) {
+    return NextResponse.json({ ok: true, message: "No games today in ET window.", inserted: 0 });
+  }
 
-      const bookmakers = payload?.bookmakers ?? [];
-      if (!bookmakers.length) { emptyEvents++; continue; }
+  const marketsWanted = ["batter_home_runs", "batter_first_home_run"] as const;
 
-      for (const book of bookmakers) {
-        const bookmaker = String(book.key).toLowerCase();
-        if (!ALLOWED_BOOKS.includes(bookmaker)) continue;
+  let eventsProcessed = 0;
+  let snapshotsInserted = 0;
 
-        for (const mk of book.markets ?? []) {
-          const market_key: TargetMarket = mk.key;
-          if (!TARGET_MARKETS.includes(market_key)) continue;
+  for (const game of games) {
+    const eventId = String(game.game_id);
 
-          for (const outcome of mk.outcomes ?? []) {
-            // Player identification from props outcome payload
-            const playerName = outcome.description || outcome.name || outcome.player_name;
-            const playerId = String(outcome.player_id || playerName);
-            const american_odds = Number(outcome.price ?? outcome.american_odds ?? outcome.odds);
-            if (!Number.isFinite(american_odds)) continue; // skip malformed odds
-            const decimal_odds = americanToDecimal(american_odds);
-            const teamGuess = normalizeTeamAbbr(outcome.team ?? g.home_team);
+    // 2) Fetch event odds for the two markets (player props)
+    const url = new URL(`https://api.the-odds-api.com/v4/sports/${SPORT}/events/${eventId}/odds`);
+    url.searchParams.set("apiKey", THEODDSAPI_KEY);
+    url.searchParams.set("markets", marketsWanted.join(","));
+    url.searchParams.set("bookmakers", BOOKS.join(","));
+    url.searchParams.set("oddsFormat", "american");
+    url.searchParams.set("dateFormat", "iso");
 
-            // Ensure player
-            const { error: pErr } = await supabaseAdmin.from("players").upsert(
-              [{ player_id: playerId, full_name: playerName, team_abbr: teamGuess }],
-              { onConflict: "player_id" }
-            );
-            if (pErr) throw pErr; else newPlayers++;
+    let eventPayload: OddsAPIEvent | null = null;
 
-            // Ensure participant link
-            await supabaseAdmin.from("game_participants").upsert(
-              [{ game_id: g.game_id, player_id: playerId, team_abbr: teamGuess }],
-              { onConflict: "game_id,player_id" }
-            );
+    try {
+      const resp = await fetch(url.toString(), { cache: "no-store" });
+      if (resp.status === 404) {
+        // Skip gracefully — not all events have these props live yet
+        eventsProcessed++;
+        continue;
+      }
+      if (!resp.ok) {
+        const txt = await resp.text();
+        // Skip this event but continue
+        eventsProcessed++;
+        continue;
+      }
+      const json = (await resp.json()) as OddsAPIEvent;
+      eventPayload = json;
+    } catch {
+      // Network hiccup — skip this event
+      eventsProcessed++;
+      continue;
+    }
 
-            // Current odds snapshot (FK depends on markets being present)
-            const { error: oErr } = await supabaseAdmin.from("odds").upsert(
-              [{
-                market_key,
-                player_id: playerId,
-                game_id: g.game_id,
-                bookmaker,
-                american_odds,
-                decimal_odds,
-              }],
-              { onConflict: "market_key,player_id,game_id,bookmaker" }
-            );
-            if (oErr) throw oErr; else upserts++;
+    if (!eventPayload?.bookmakers?.length) {
+      eventsProcessed++;
+      continue;
+    }
 
-            // Historical point
-            const { error: hErr } = await supabaseAdmin.from("odds_history").insert([{
-              market_key,
-              player_id: playerId,
-              game_id: g.game_id,
-              bookmaker,
-              american_odds,
-              decimal_odds,
-            }]);
-            if (hErr) throw hErr; else snapshots++;
+    // 3) Iterate bookmakers and markets
+    for (const bk of eventPayload.bookmakers) {
+      if (!isBookWanted(bk.key)) continue;
+      const bookmaker_key = bk.key.toLowerCase().includes("mgm") ? "betmgm" : "fanduel";
+
+      for (const mkt of bk.markets ?? []) {
+        if (!marketsWanted.includes(mkt.key)) continue;
+
+        // Ensure the market exists in our markets table
+        await supabase
+          .from("markets")
+          .upsert(
+            [{ market_key: mkt.key, name: mkt.key.replaceAll("_", " ") }],
+            { onConflict: "market_key" }
+          );
+
+        // Outcomes: for these markets, TheOddsAPI sets player name in `description` (or sometimes `name`)
+        for (const oc of mkt.outcomes ?? []) {
+          const american_odds = Number(oc.price);
+          if (!Number.isFinite(american_odds)) continue;
+
+          const rawName = (oc.description ?? oc.name ?? "").trim();
+          if (!rawName) continue;
+
+          // Attempt to map the outcome to a player_id by exact or loose match
+          // (keeps same style you had before, but safe if no match — we still store odds row with null player)
+          let player_id: string | null = null;
+
+          // exact match
+          if (rawName) {
+            const { data: match } = await supabase
+              .from("players")
+              .select("player_id, full_name")
+              .ilike("full_name", rawName)
+              .limit(1)
+              .maybeSingle();
+
+            if (match?.player_id) {
+              player_id = String(match.player_id);
+            } else {
+              // loose match: strip punctuation, compare lowercased
+              const cleaned = rawName.toLowerCase().replace(/[^\w\s]/g, "").trim();
+              const { data: loose } = await supabase
+                .from("players")
+                .select("player_id, full_name")
+                .limit(20);
+              const found = (loose ?? []).find((p) =>
+                (p.full_name ?? "")
+                  .toLowerCase()
+                  .replace(/[^\w\s]/g, "")
+                  .trim() === cleaned
+              );
+              if (found) player_id = String(found.player_id);
+            }
           }
+
+          // 4) Upsert full-odds row & append to odds_history
+          const nowISO = new Date().toISOString();
+          const oddsRow = {
+            game_id: eventId,
+            market_key: mkt.key,
+            bookmaker_key,
+            player_id, // can be null if we didn’t match — history still useful
+            american_odds,
+            captured_at: nowISO,
+          };
+
+          // odds (latest snapshot per (game,market,book,player))
+          await supabase
+            .from("odds")
+            .upsert([oddsRow], {
+              onConflict: "game_id,market_key,bookmaker_key,player_id",
+            });
+
+          // odds_history (append-only)
+          await supabase.from("odds_history").insert([oddsRow]);
+
+          snapshotsInserted++;
         }
       }
     }
 
-    return NextResponse.json({ ok: true, upserts, snapshots, newPlayers, emptyEvents });
-  } catch (err: any) {
-    return NextResponse.json({ ok: false, error: err.message }, { status: 500 });
+    eventsProcessed++;
   }
+
+  return NextResponse.json(
+    { ok: true, eventsProcessed, snapshotsInserted },
+    { status: 200 }
+  );
 }
