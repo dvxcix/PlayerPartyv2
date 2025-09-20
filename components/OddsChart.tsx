@@ -47,23 +47,22 @@ const ymd = (iso: string) => {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 };
 
-async function fetchHistory(
-  playerId: string,
-  gameId: string | undefined,
-  marketKey: MarketKey
-): Promise<Snapshot[]> {
-  const params = new URLSearchParams({ market_key: marketKey });
+// Market alias sets we’ll try in order
+const MARKET_ALIASES: Record<MarketKey, string[]> = {
+  batter_home_runs: ["batter_home_runs", "batter_home_run", "player_home_run"],
+  batter_first_home_run: ["batter_first_home_run", "first_home_run"],
+};
+
+async function fetchOdds(playerId: string, marketKey?: string, gameId?: string) {
+  const params = new URLSearchParams();
+  if (marketKey) params.set("market_key", marketKey);
   if (gameId) params.set("game_id", gameId);
-
-  const res = await fetch(`/api/players/${encodeURIComponent(playerId)}/odds?` + params.toString(), {
-    cache: "no-store",
-  });
-  const json = await res.json();
-  if (!json?.ok) return [];
-
+  const url = `/api/players/${encodeURIComponent(playerId)}/odds` + (params.toString() ? `?${params}` : "");
+  const res = await fetch(url, { cache: "no-store" });
+  const json = await res.json().catch(() => null);
+  if (!json || json.ok === false) return [] as Snapshot[];
   const raw = Array.isArray(json.data) ? json.data : Array.isArray(json) ? json : [];
   const out: Snapshot[] = [];
-
   for (const r of raw as any[]) {
     const book = normBook(String(r.bookmaker ?? ""));
     const ao = Number(r.american_odds);
@@ -75,9 +74,44 @@ async function fetchHistory(
   return out;
 }
 
+async function fetchHistorySmart(
+  playerId: string,
+  selectedGameId: string | undefined,
+  selectedMarket: MarketKey,
+  gameDates: Record<string, string>
+): Promise<Snapshot[]> {
+  const aliases = MARKET_ALIASES[selectedMarket];
+
+  // 1) Try scoped by game_id with each alias
+  if (selectedGameId) {
+    for (const mk of aliases) {
+      const scoped = await fetchOdds(playerId, mk, selectedGameId);
+      if (scoped.length) return scoped;
+    }
+    // 2) If still empty, fetch unscoped but filter to the **selected game’s date**
+    const targetDate = gameDates[selectedGameId];
+    if (targetDate) {
+      for (const mk of aliases) {
+        const unscoped = await fetchOdds(playerId, mk, undefined);
+        const filtered = unscoped.filter((r) => ymd(r.captured_at) === targetDate);
+        if (filtered.length) return filtered;
+      }
+    }
+    // 3) As a last resort when aliasing doesn’t match the API route, fetch NOTHING (we don’t want yesterday bleed)
+    return [];
+  }
+
+  // No games selected → unscoped, try aliases
+  for (const mk of aliases) {
+    const rows = await fetchOdds(playerId, mk, undefined);
+    if (rows.length) return rows;
+  }
+  return [];
+}
+
 export function OddsChart({
   gameIds,
-  gameDates, // game_id -> 'YYYY-MM-DD' from commence_time
+  gameDates, // game_id -> 'YYYY-MM-DD'
   players,
   marketKey,
   outcome,
@@ -90,7 +124,7 @@ export function OddsChart({
   outcome: OutcomeKey;
   refreshTick: number;
 }) {
-  const [series, setSeries] = useState<Record<string, Snapshot[]>>({}); // key: `${player}|${book}`
+  const [series, setSeries] = useState<Record<string, Snapshot[]>>({}); // `${player}|${book}`
 
   useEffect(() => {
     let cancelled = false;
@@ -101,6 +135,7 @@ export function OddsChart({
         return;
       }
 
+      // Build (player, game?) pairs (no games → just per player)
       const pairs: Array<{ player_id: string; game_id?: string }> = [];
       if (gameIds.length > 0) {
         for (const gid of gameIds) {
@@ -117,25 +152,9 @@ export function OddsChart({
       }
 
       const acc: Record<string, Snapshot[]> = {};
-
       for (const item of pairs) {
-        const rows = await fetchHistory(item.player_id, item.game_id, marketKey);
-
-        let usable = rows;
-
-        // If a specific game is selected, **do not** fallback to unscoped history.
-        // Instead, constrain rows to that game's date to avoid yesterday’s series data.
-        if (item.game_id) {
-          const targetDate = gameDates[item.game_id]; // 'YYYY-MM-DD'
-          if (targetDate) {
-            usable = rows.filter((r) => ymd(r.captured_at) === targetDate);
-          }
-        }
-
-        // If no games are selected AND nothing came back, allow unscoped (already unscoped in that case).
-        // (We only called scoped when item.game_id existed.)
-
-        for (const r of usable) {
+        const rows = await fetchHistorySmart(item.player_id, item.game_id, marketKey, gameDates);
+        for (const r of rows) {
           if (!matchesOutcome(marketKey, outcome, r.american_odds)) continue;
           if (!passBounds(marketKey, outcome, r.american_odds)) continue;
           const key = `${item.player_id}|${r.bookmaker}`;
@@ -143,6 +162,7 @@ export function OddsChart({
         }
       }
 
+      // Sort time asc
       Object.values(acc).forEach((arr) =>
         arr.sort((a, b) => new Date(a.captured_at).getTime() - new Date(b.captured_at).getTime())
       );
