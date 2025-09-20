@@ -4,9 +4,10 @@
 import { useEffect, useMemo, useState } from "react";
 
 type Participant = {
-  player_id: string;
+  player_id?: string;
   full_name?: string;
   team_abbr?: string;
+  players?: { full_name?: string };
 };
 type Game = {
   game_id: string;
@@ -14,12 +15,24 @@ type Game = {
   participants?: Participant[];
 };
 
+// ID + name helpers (tolerant to your shapes)
 function getPlayerId(p: any): string {
-  return (p?.player_id ?? p?.id ?? "").toString();
+  return (
+    (p?.player_id ??
+      p?.id ??
+      p?.players?.full_name ?? // last resort
+      "") as string
+  ).toString();
 }
 function getPlayerName(p: any): string {
-  return (p?.full_name ?? p?.name ?? p?.player_name ?? getPlayerId(p)).toString();
+  return (
+    (p?.full_name ??
+      p?.players?.full_name ??
+      p?.player_name ??
+      getPlayerId(p)) as string
+  ).toString();
 }
+
 function uniqueBy<T>(arr: T[], keyFn: (x: T) => string) {
   const seen = new Set<string>();
   const out: T[] = [];
@@ -49,18 +62,20 @@ function parseMapCsv(csv: string): Record<string, string> {
   return map;
 }
 
+// Fetch from your actual route location: /api/cron/participants
 async function fetchParticipants(gameIds: string[]): Promise<Record<string, Participant[]>> {
   if (gameIds.length === 0) return {};
-  const res = await fetch(`/api/participants?game_ids=${encodeURIComponent(gameIds.join(","))}`, { cache: "no-store" });
+  const url = `/api/cron/participants?game_ids=${encodeURIComponent(gameIds.join(","))}`;
+  const res = await fetch(url, { cache: "no-store" });
   const json = await res.json().catch(() => null);
-  // Accept either {ok:true,data:{game_id:[…]}} or {game_id:[…]}
   const out: Record<string, Participant[]> = {};
   if (!json) return out;
+
+  // Accept {ok:true,data:{gid:[…]}} or plain {gid:[…]}
   if (json.ok && json.data && typeof json.data === "object") {
     Object.entries(json.data).forEach(([gid, arr]) => (out[gid] = Array.isArray(arr) ? (arr as Participant[]) : []));
     return out;
   }
-  // or plain object keyed by game_id
   if (typeof json === "object" && !Array.isArray(json)) {
     Object.entries(json as any).forEach(([gid, arr]) => (out[gid] = Array.isArray(arr) ? (arr as Participant[]) : []));
   }
@@ -82,7 +97,7 @@ export function PlayersPanel({
   const [nameToId, setNameToId] = useState<Record<string, string>>({});
   const [inlineOrFetched, setInlineOrFetched] = useState<Record<string, Participant[]>>({}); // game_id -> participants[]
 
-  // load /public/map.csv once on client
+  // load /public/map.csv once
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -92,7 +107,7 @@ export function PlayersPanel({
         if (!alive) return;
         setNameToId(parseMapCsv(txt));
       } catch {
-        // ignore; fallbacks will work
+        // ignore
       }
     })();
     return () => {
@@ -100,17 +115,16 @@ export function PlayersPanel({
     };
   }, []);
 
-  // Combine inlined participants (if present) with fetched participants for selected games
+  // Merge inline participants and fetched participants for selected games
   useEffect(() => {
     let alive = true;
     (async () => {
-      // Start with any inlined participants from games prop
+      // Inline first
       const base: Record<string, Participant[]> = {};
       for (const g of games) {
         if (Array.isArray(g.participants)) base[g.game_id] = g.participants;
       }
-
-      // If selected games have no inline participants, fetch them
+      // Fetch missing for selected games
       const missing: string[] = selectedGameIds.filter((gid) => !base[gid]);
       if (missing.length > 0) {
         try {
@@ -118,7 +132,7 @@ export function PlayersPanel({
           if (!alive) return;
           for (const gid of Object.keys(fetched)) base[gid] = fetched[gid] || [];
         } catch {
-          // ignore fetch errors; we'll just show none
+          // ignore
         }
       }
       if (alive) setInlineOrFetched(base);
@@ -129,20 +143,18 @@ export function PlayersPanel({
     };
   }, [JSON.stringify(games), JSON.stringify(selectedGameIds)]);
 
-  // Build pool according to selection: if games selected -> union of those games' participants.
-  // If no games selected -> union of all today's games' participants (inline or fetched)
+  // Build player pool:
+  // - if games selected: union participants for those games
+  // - if none selected: union participants for all games
   const pool = useMemo(() => {
-    const byGame = inlineOrFetched;
     const useIds = selectedGameIds.length > 0 ? selectedGameIds : games.map((g) => g.game_id);
-    const participants = useIds.flatMap((gid) => byGame[gid] ?? []);
+    const participants = useIds.flatMap((gid) => inlineOrFetched[gid] ?? []);
     const unique = uniqueBy(participants, (p) => getPlayerId(p));
     unique.sort((a, b) => getPlayerName(a).localeCompare(getPlayerName(b)));
 
     const needle = q.trim().toLowerCase();
     const filtered =
-      needle.length === 0
-        ? unique
-        : unique.filter((p) => getPlayerName(p).toLowerCase().includes(needle));
+      needle.length === 0 ? unique : unique.filter((p) => getPlayerName(p).toLowerCase().includes(needle));
 
     return filtered.map((p) => ({
       player_id: getPlayerId(p),
@@ -189,15 +201,12 @@ export function PlayersPanel({
           placeholder="Search players…"
           className="w-full border rounded-md px-3 py-1.5 text-sm"
         />
-        <button
-          onClick={toggleAll}
-          className="px-2 py-1.5 text-xs border rounded-md bg-white hover:bg-gray-50"
-        >
+        <button onClick={toggleAll} className="px-2 py-1.5 text-xs border rounded-md bg-white hover:bg-gray-50">
           {allSelected ? "Unselect All" : "Select All"}
         </button>
       </div>
 
-      {/* List (fixed height + scroll, to match Games card) */}
+      {/* List */}
       <div className="max-h-80 overflow-y-auto pr-1 border rounded-md">
         {pool.length === 0 ? (
           <div className="text-xs text-gray-500 p-3">No players match your search.</div>
