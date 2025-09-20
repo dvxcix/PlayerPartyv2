@@ -17,7 +17,6 @@ type Snapshot = {
 
 const AMERICAN = (n: number) => (n > 0 ? `+${n}` : `${n}`);
 const toPct = (a: number) => (a > 0 ? 100 / (a + 100) : Math.abs(a) / (Math.abs(a) + 100));
-
 const normBook = (b: string): "fanduel" | "betmgm" | null => {
   const s = (b || "").toLowerCase().replace(/[\s_-]+/g, "");
   if (s === "fanduel" || s === "fd") return "fanduel";
@@ -25,6 +24,7 @@ const normBook = (b: string): "fanduel" | "betmgm" | null => {
   return null;
 };
 
+// UI-only split by sign
 function matchesOutcome(market: MarketKey, outcome: OutcomeKey, american: number) {
   if (market === "batter_home_runs") {
     return outcome === "over" ? american >= 0 : outcome === "under" ? american < 0 : true;
@@ -32,6 +32,7 @@ function matchesOutcome(market: MarketKey, outcome: OutcomeKey, american: number
   return outcome === "yes" ? american >= 0 : outcome === "no" ? american < 0 : true;
 }
 
+// Bounds you requested for HR market
 function passBounds(market: MarketKey, outcome: OutcomeKey, american: number) {
   if (market === "batter_home_runs") {
     if (outcome === "over" && american > 2500) return false;
@@ -41,24 +42,17 @@ function passBounds(market: MarketKey, outcome: OutcomeKey, american: number) {
 }
 
 const getPlayerId = (p: PlayerLike) => (p.player_id ?? p.id ?? "").toString();
-const ymd = (iso: string) => {
-  const d = new Date(iso);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-};
 
-// Market alias sets we’ll try in order
+// Market alias sets (some APIs/rows may use slight variants)
 const MARKET_ALIASES: Record<MarketKey, string[]> = {
   batter_home_runs: ["batter_home_runs", "batter_home_run", "player_home_run"],
   batter_first_home_run: ["batter_first_home_run", "first_home_run"],
 };
 
-async function fetchOdds(playerId: string, marketKey?: string, gameId?: string) {
-  const params = new URLSearchParams();
-  if (marketKey) params.set("market_key", marketKey);
+async function fetchOdds(playerId: string, marketKey: string, gameId?: string) {
+  const params = new URLSearchParams({ market_key: marketKey });
   if (gameId) params.set("game_id", gameId);
-  const url = `/api/players/${encodeURIComponent(playerId)}/odds` + (params.toString() ? `?${params}` : "");
-  const res = await fetch(url, { cache: "no-store" });
+  const res = await fetch(`/api/players/${encodeURIComponent(playerId)}/odds?${params.toString()}`, { cache: "no-store" });
   const json = await res.json().catch(() => null);
   if (!json || json.ok === false) return [] as Snapshot[];
   const raw = Array.isArray(json.data) ? json.data : Array.isArray(json) ? json : [];
@@ -74,34 +68,23 @@ async function fetchOdds(playerId: string, marketKey?: string, gameId?: string) 
   return out;
 }
 
-async function fetchHistorySmart(
+async function fetchStrict(
   playerId: string,
-  selectedGameId: string | undefined,
-  selectedMarket: MarketKey,
-  gameDates: Record<string, string>
+  gameId: string | undefined,
+  marketKey: MarketKey
 ): Promise<Snapshot[]> {
-  const aliases = MARKET_ALIASES[selectedMarket];
+  const aliases = MARKET_ALIASES[marketKey];
 
-  // 1) Try scoped by game_id with each alias
-  if (selectedGameId) {
+  // If a game is selected, ONLY return rows for that exact game_id.
+  if (gameId) {
     for (const mk of aliases) {
-      const scoped = await fetchOdds(playerId, mk, selectedGameId);
-      if (scoped.length) return scoped;
+      const rows = await fetchOdds(playerId, mk, gameId);
+      if (rows.length) return rows;
     }
-    // 2) If still empty, fetch unscoped but filter to the **selected game’s date**
-    const targetDate = gameDates[selectedGameId];
-    if (targetDate) {
-      for (const mk of aliases) {
-        const unscoped = await fetchOdds(playerId, mk, undefined);
-        const filtered = unscoped.filter((r) => ymd(r.captured_at) === targetDate);
-        if (filtered.length) return filtered;
-      }
-    }
-    // 3) As a last resort when aliasing doesn’t match the API route, fetch NOTHING (we don’t want yesterday bleed)
-    return [];
+    return []; // strict: no game → no data
   }
 
-  // No games selected → unscoped, try aliases
+  // No games selected → unscoped history (useful for exploratory view)
   for (const mk of aliases) {
     const rows = await fetchOdds(playerId, mk, undefined);
     if (rows.length) return rows;
@@ -111,14 +94,12 @@ async function fetchHistorySmart(
 
 export function OddsChart({
   gameIds,
-  gameDates, // game_id -> 'YYYY-MM-DD'
   players,
   marketKey,
   outcome,
   refreshTick,
 }: {
   gameIds: string[];
-  gameDates: Record<string, string>;
   players: PlayerLike[];
   marketKey: MarketKey;
   outcome: OutcomeKey;
@@ -135,7 +116,7 @@ export function OddsChart({
         return;
       }
 
-      // Build (player, game?) pairs (no games → just per player)
+      // Build pairs: if games selected, make (player, each selected game).
       const pairs: Array<{ player_id: string; game_id?: string }> = [];
       if (gameIds.length > 0) {
         for (const gid of gameIds) {
@@ -153,7 +134,7 @@ export function OddsChart({
 
       const acc: Record<string, Snapshot[]> = {};
       for (const item of pairs) {
-        const rows = await fetchHistorySmart(item.player_id, item.game_id, marketKey, gameDates);
+        const rows = await fetchStrict(item.player_id, item.game_id, marketKey);
         for (const r of rows) {
           if (!matchesOutcome(marketKey, outcome, r.american_odds)) continue;
           if (!passBounds(marketKey, outcome, r.american_odds)) continue;
@@ -162,7 +143,6 @@ export function OddsChart({
         }
       }
 
-      // Sort time asc
       Object.values(acc).forEach((arr) =>
         arr.sort((a, b) => new Date(a.captured_at).getTime() - new Date(b.captured_at).getTime())
       );
@@ -173,7 +153,7 @@ export function OddsChart({
     return () => {
       cancelled = true;
     };
-  }, [JSON.stringify(gameIds), JSON.stringify(players), JSON.stringify(gameDates), marketKey, outcome, refreshTick]);
+  }, [JSON.stringify(gameIds), JSON.stringify(players), marketKey, outcome, refreshTick]);
 
   const lines = useMemo(() => {
     const out: { key: string; book: "fanduel" | "betmgm"; points: { ts: number; american: number; implied: number }[] }[] =
