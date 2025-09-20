@@ -10,14 +10,11 @@ import { OddsChart } from "@/components/OddsChart";
 type MarketKey = "batter_home_runs" | "batter_first_home_run";
 type OutcomeKey = "over" | "under" | "yes" | "no";
 
-// Be permissive so it matches whatever /api/games returns today or tomorrow.
-// (MultiGamePicker also uses optional fields and safe fallbacks.)
 type Game = {
   game_id: string;
   commence_time: string; // ISO
   home_team?: string;
   away_team?: string;
-  // either of these may exist, both are optional:
   home_team_abbr?: string;
   away_team_abbr?: string;
   home_abbr?: string;
@@ -25,18 +22,21 @@ type Game = {
   participants?: { player_id: string; full_name?: string; team_abbr?: string }[];
 };
 
-// Get YYYY-MM-DD in America/New_York
-function ymdET(iso: string): string {
+// Get YYYY-MM-DD in America/New_York (defensive)
+function ymdET(iso: string | undefined | null): string | null {
+  if (!iso) return null;
   const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/New_York",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
   }).formatToParts(d);
-  const y = parts.find((p) => p.type === "year")!.value;
-  const m = parts.find((p) => p.type === "month")!.value;
-  const day = parts.find((p) => p.type === "day")!.value;
+  const y = parts.find((p) => p.type === "year")?.value;
+  const m = parts.find((p) => p.type === "month")?.value;
+  const day = parts.find((p) => p.type === "day")?.value;
+  if (!y || !m || !day) return null;
   return `${y}-${m}-${day}`;
 }
 
@@ -47,8 +47,11 @@ const MARKETS: { key: MarketKey; label: string; outcomes: OutcomeKey[]; defaultO
 
 export default function DashboardPage() {
   const [games, setGames] = useState<Game[]>([]);
+  const [gamesError, setGamesError] = useState<string | null>(null);
+
   const [selectedGameIds, setSelectedGameIds] = useState<string[]>([]);
   const [selectedPlayers, setSelectedPlayers] = useState<{ player_id: string; full_name: string }[]>([]);
+
   const [market, setMarket] = useState<MarketKey>("batter_home_runs");
   const [outcome, setOutcome] = useState<OutcomeKey>("over");
 
@@ -61,17 +64,54 @@ export default function DashboardPage() {
   const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
 
-  // Load today's games (your /api/games already returns only today)
+  // Robust games fetch: accept array OR {games} OR {ok,games}
   useEffect(() => {
+    let alive = true;
     (async () => {
-      const res = await fetch("/api/games", { cache: "no-store" });
-      const json = await res.json();
-      if (json?.ok && Array.isArray(json.games)) {
-        setGames(json.games);
-      } else {
+      setGamesError(null);
+      try {
+        const res = await fetch("/api/games?with_participants=1", { cache: "no-store" });
+        const txt = await res.text(); // be robust to non-JSON errors
+        let payload: any;
+        try {
+          payload = JSON.parse(txt);
+        } catch {
+          throw new Error(`/api/games returned non-JSON: ${txt.slice(0, 200)}`);
+        }
+
+        let list: any[] | null = null;
+        if (Array.isArray(payload)) list = payload;
+        else if (payload && Array.isArray(payload.games)) list = payload.games;
+        else if (payload && payload.ok && Array.isArray(payload.games)) list = payload.games;
+
+        if (!list) throw new Error("No games array in response");
+        if (!alive) return;
+
+        // Basic shape normalize
+        const norm: Game[] = list
+          .filter((g) => g && g.game_id && g.commence_time)
+          .map((g) => ({
+            game_id: String(g.game_id),
+            commence_time: g.commence_time,
+            home_team: g.home_team ?? g.home ?? null ?? undefined,
+            away_team: g.away_team ?? g.away ?? null ?? undefined,
+            home_team_abbr: g.home_team_abbr ?? g.home_abbr ?? g.home ?? undefined,
+            away_team_abbr: g.away_team_abbr ?? g.away_abbr ?? g.away ?? undefined,
+            home_abbr: g.home_abbr ?? g.home_team_abbr ?? undefined,
+            away_abbr: g.away_abbr ?? g.away_team_abbr ?? undefined,
+            participants: Array.isArray(g.participants) ? g.participants : undefined,
+          }));
+
+        setGames(norm);
+      } catch (e: any) {
+        if (!alive) return;
         setGames([]);
+        setGamesError(e?.message ?? String(e));
       }
     })();
+    return () => {
+      alive = false;
+    };
   }, []);
 
   // Keep outcome synced with market
@@ -86,12 +126,12 @@ export default function DashboardPage() {
     return `${countGames} game${countGames === 1 ? "" : "s"} · ${countPlayers} player${countPlayers === 1 ? "" : "s"}`;
   }, [selectedPlayers, selectedGameIds]);
 
-  // Build ET date map for selected games (pass to chart so it can keep only today’s date)
+  // ET date map for games (defensive)
   const gameDates: Record<string, string> = useMemo(() => {
     const map: Record<string, string> = {};
     for (const g of games) {
-      if (!g?.game_id || !g?.commence_time) continue;
-      map[g.game_id] = ymdET(g.commence_time);
+      const d = ymdET(g.commence_time);
+      if (g.game_id && d) map[g.game_id] = d;
     }
     return map;
   }, [games]);
@@ -199,11 +239,13 @@ export default function DashboardPage() {
             </div>
             {showGames && (
               <div className="p-3">
-                <MultiGamePicker
-                  games={games}
-                  value={selectedGameIds}
-                  onChange={setSelectedGameIds}
-                />
+                {gamesError ? (
+                  <div className="text-xs text-red-600 break-words">
+                    Failed to load games: {gamesError}
+                  </div>
+                ) : (
+                  <MultiGamePicker games={games} value={selectedGameIds} onChange={setSelectedGameIds} />
+                )}
               </div>
             )}
           </div>
@@ -247,10 +289,10 @@ export default function DashboardPage() {
             <OddsChart
               gameIds={selectedGameIds}
               gameDates={useMemo(() => {
-                // pass once per render to avoid extra JSON deps in OddsChart
                 const map: Record<string, string> = {};
                 for (const g of games) {
-                  if (g?.game_id && g?.commence_time) map[g.game_id] = ymdET(g.commence_time);
+                  const d = ymdET(g.commence_time);
+                  if (g?.game_id && d) map[g.game_id] = d;
                 }
                 return map;
               }, [games])}
