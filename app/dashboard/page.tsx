@@ -29,7 +29,7 @@ type Game = {
   participants?: Participant[];
 };
 
-// Get YYYY-MM-DD in America/New_York (defensive)
+// YYYY-MM-DD in America/New_York
 function ymdET(iso: string | undefined | null): string | null {
   if (!iso) return null;
   const d = new Date(iso);
@@ -52,6 +52,16 @@ const MARKETS: { key: MarketKey; label: string; outcomes: OutcomeKey[]; defaultO
   { key: "batter_first_home_run", label: "Batter First Home Run", outcomes: ["yes", "no"], defaultOutcome: "yes" },
 ];
 
+async function fetchJson(url: string): Promise<any | null> {
+  try {
+    const res = await fetch(url, { cache: "no-store" });
+    const txt = await res.text();
+    return JSON.parse(txt);
+  } catch {
+    return null;
+  }
+}
+
 export default function DashboardPage() {
   const [games, setGames] = useState<Game[]>([]);
   const [gamesError, setGamesError] = useState<string | null>(null);
@@ -71,65 +81,77 @@ export default function DashboardPage() {
   const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
 
-  // Robust games fetch: accept array OR {games} OR {ok,games}
+  // ROBUST GAMES FETCH (stays on /api/games)
   useEffect(() => {
     let alive = true;
     (async () => {
       setGamesError(null);
-      try {
-        const res = await fetch("/api/games?with_participants=1", { cache: "no-store" });
-        const txt = await res.text();
-        let payload: any;
-        try {
-          payload = JSON.parse(txt);
-        } catch {
-          throw new Error(`Non-JSON from /api/games: ${txt.slice(0, 200)}`);
+
+      // Try with participants hint first, then without
+      const candidates = ["/api/games?with_participants=1", "/api/games"];
+
+      let list: any[] | null = null;
+      let lastErr = "No games array in response";
+
+      for (const url of candidates) {
+        const payload = await fetchJson(url);
+        if (!payload) {
+          lastErr = `Non-JSON from ${url}`;
+          continue;
         }
-
-        let list: any[] | null = null;
-        if (Array.isArray(payload)) list = payload;
-        else if (payload && Array.isArray(payload.games)) list = payload.games;
-        else if (payload && payload.ok && Array.isArray(payload.games)) list = payload.games;
-
-        if (!list) throw new Error("No games array in response");
-        if (!alive) return;
-
-        // Normalize
-        const norm: Game[] = list
-          .filter((g) => g && (g.game_id || g.id) && g.commence_time)
-          .map((g) => {
-            const game_id = String(g.game_id ?? g.id);
-            const home_abbr = (g.home_team_abbr ?? g.home_abbr ?? g.home_team ?? g.home ?? "").toString().toLowerCase();
-            const away_abbr = (g.away_team_abbr ?? g.away_abbr ?? g.away_team ?? g.away ?? "").toString().toLowerCase();
-
-            let parts: Participant[] | undefined = undefined;
-            if (Array.isArray(g.participants)) {
-              parts = g.participants.map((p: any) => ({
-                player_id: p.player_id ?? p.id ?? p.players?.full_name ?? undefined,
-                full_name: p.full_name ?? p.players?.full_name ?? p.player_name ?? undefined,
-                team_abbr: p.team_abbr ?? undefined,
-              }));
-            }
-
-            return {
-              game_id,
-              commence_time: g.commence_time,
-              home_team: g.home_team ?? g.home ?? undefined,
-              away_team: g.away_team ?? g.away ?? undefined,
-              home_team_abbr: home_abbr || undefined,
-              away_team_abbr: away_abbr || undefined,
-              home_abbr: home_abbr || undefined,
-              away_abbr: away_abbr || undefined,
-              participants: parts,
-            } as Game;
-          });
-
-        setGames(norm);
-      } catch (e: any) {
-        if (!alive) return;
-        setGames([]);
-        setGamesError(e?.message ?? String(e));
+        if (Array.isArray(payload)) {
+          list = payload;
+          break;
+        }
+        if (payload.games && Array.isArray(payload.games)) {
+          list = payload.games;
+          break;
+        }
+        if (payload.ok && Array.isArray(payload.games)) {
+          list = payload.games;
+          break;
+        }
+        lastErr = `No games array in response`;
       }
+
+      if (!alive) return;
+
+      if (!list) {
+        setGames([]);
+        setGamesError(lastErr);
+        return;
+      }
+
+      const norm: Game[] = list
+        .filter((g) => g && (g.game_id || g.id) && g.commence_time)
+        .map((g) => {
+          const game_id = String(g.game_id ?? g.id);
+          const home_abbr = (g.home_team_abbr ?? g.home_abbr ?? g.home_team ?? g.home ?? "").toString().toLowerCase();
+          const away_abbr = (g.away_team_abbr ?? g.away_abbr ?? g.away_team ?? g.away ?? "").toString().toLowerCase();
+
+          let parts: Participant[] | undefined = undefined;
+          if (Array.isArray(g.participants)) {
+            parts = g.participants.map((p: any) => ({
+              player_id: p.player_id ?? p.id ?? p.players?.full_name ?? undefined,
+              full_name: p.full_name ?? p.players?.full_name ?? p.player_name ?? undefined,
+              team_abbr: p.team_abbr ?? undefined,
+            }));
+          }
+
+          return {
+            game_id,
+            commence_time: g.commence_time,
+            home_team: g.home_team ?? g.home ?? undefined,
+            away_team: g.away_team ?? g.away ?? undefined,
+            home_team_abbr: home_abbr || undefined,
+            away_team_abbr: away_abbr || undefined,
+            home_abbr: home_abbr || undefined,
+            away_abbr: away_abbr || undefined,
+            participants: parts,
+          } as Game;
+        });
+
+      setGames(norm);
     })();
     return () => {
       alive = false;
@@ -180,7 +202,7 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Header (static sticky) */}
+      {/* Header */}
       <div className="sticky top-0 z-30 bg-white border-b">
         <div className="max-w-7xl mx-auto px-4">
           <div className="flex items-center justify-between py-2">
