@@ -14,6 +14,7 @@ function windowUTC() {
     endISO: new Date(now + 36 * 60 * 60 * 1000).toISOString(),
   };
 }
+const lc = (s: any) => (typeof s === "string" ? s.trim().toLowerCase() : "");
 
 export async function GET(req: Request) {
   try {
@@ -22,12 +23,11 @@ export async function GET(req: Request) {
     const includePast = url.searchParams.get("include_past") === "1";
     const dateParam = url.searchParams.get("date"); // optional YYYY-MM-DD
 
-    // Prefer view v_games_today if available
+    // Prefer view v_games_today if present
     let gamesRes = await supabase.from("v_games_today").select("*");
     let fromView = true;
 
     if (gamesRes.error) {
-      // Fall back to games table with window filtering
       fromView = false;
       let q = supabase.from("games").select("*");
       if (includePast) {
@@ -47,20 +47,25 @@ export async function GET(req: Request) {
       return NextResponse.json({ ok: false, error: gamesRes.error.message }, { status: 500 });
     }
 
-    const rawGames = (gamesRes.data ?? []) as AnyRow[];
+    const raw = (gamesRes.data ?? []) as AnyRow[];
+    const norm = raw
+      .map((g) => ({
+        game_id: String(g.game_id ?? g.id ?? g.event_id ?? ""),
+        home_team: String(g.home_team ?? g.home ?? ""),
+        away_team: String(g.away_team ?? g.away ?? ""),
+        commence_time: g.commence_time ?? g.start_time ?? null,
+        status: g.status ?? null,
+        game_date: g.game_date ?? null,
+      }))
+      .filter((g) => g.game_id);
 
-    // Normalize core fields from either v_games_today or games
-    const gamesNorm = rawGames.map((g) => ({
-      game_id: String(g.game_id ?? g.id ?? g.event_id ?? ""),
-      home_team: String(g.home_team ?? g.home ?? ""),
-      away_team: String(g.away_team ?? g.away ?? ""),
-      commence_time: g.commence_time ?? g.start_time ?? null,
-      status: g.status ?? null,
-      game_date: g.game_date ?? null,
-    })).filter((g) => g.game_id);
+    const gameIds = norm.map((g) => g.game_id);
 
-    const gameIds = gamesNorm.map((g) => g.game_id);
-    let participantsByGame = new Map<string, Array<{ player_id: string; team_abbr: string | null; full_name?: string }>>();
+    // participants + names
+    const participantsByGame = new Map<
+      string,
+      Array<{ player_id: string; team_abbr: string | null; full_name?: string }>
+    >();
 
     if (gameIds.length) {
       const gpRes = await supabase
@@ -73,35 +78,31 @@ export async function GET(req: Request) {
       }
 
       const gpRows = gpRes.data ?? [];
-      const playerIds = Array.from(new Set(gpRows.map((r: any) => r.player_id)));
-      const namesMap = new Map<string, string>();
-      if (playerIds.length) {
-        const pRes = await supabase
-          .from("players")
-          .select("player_id, full_name")
-          .in("player_id", playerIds);
-        for (const p of pRes.data ?? []) {
-          namesMap.set(String(p.player_id), p.full_name);
-        }
+      const pIds = Array.from(new Set(gpRows.map((r: any) => r.player_id)));
+      const nameMap = new Map<string, string>();
+      if (pIds.length) {
+        const pRes = await supabase.from("players").select("player_id, full_name").in("player_id", pIds);
+        for (const p of pRes.data ?? []) nameMap.set(String(p.player_id), p.full_name);
       }
 
-      for (const row of gpRows) {
-        const gid = String(row.game_id);
+      for (const r of gpRows) {
+        const gid = String(r.game_id);
         const arr = participantsByGame.get(gid) ?? [];
         arr.push({
-          player_id: String(row.player_id),
-          team_abbr: row.team_abbr ?? null,
-          full_name: namesMap.get(String(row.player_id)),
+          player_id: String(r.player_id),
+          team_abbr: r.team_abbr ?? null,
+          full_name: nameMap.get(String(r.player_id)),
         });
         participantsByGame.set(gid, arr);
       }
     }
 
-    const payload = gamesNorm.map((g) => ({
+    // IMPORTANT: supply lowercase *_abbr fields for logos
+    const payload = norm.map((g) => ({
       id: g.game_id,
       game_id: g.game_id,
-      home_team_abbr: g.home_team,  // UI expects *_abbr fields; we map directly
-      away_team_abbr: g.away_team,
+      home_team_abbr: lc(g.home_team),
+      away_team_abbr: lc(g.away_team),
       commence_time: g.commence_time,
       status: g.status,
       participants: (participantsByGame.get(g.game_id) ?? []).map((p) => ({
@@ -111,7 +112,10 @@ export async function GET(req: Request) {
       })),
     }));
 
-    return NextResponse.json({ ok: true, data: payload, source: fromView ? "v_games_today" : "games" }, { status: 200 });
+    return NextResponse.json(
+      { ok: true, data: payload, source: fromView ? "v_games_today" : "games" },
+      { status: 200 }
+    );
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: String(e?.message ?? e) }, { status: 500 });
   }
