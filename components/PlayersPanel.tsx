@@ -15,24 +15,16 @@ type Game = {
   participants?: Participant[];
 };
 
-// ID + name helpers (tolerant to your shapes)
 function getPlayerId(p: any): string {
   return (
-    (p?.player_id ??
-      p?.id ??
-      p?.players?.full_name ?? // last resort
-      "") as string
-  ).toString();
+    (p?.player_id ?? p?.id ?? p?.players?.full_name ?? "").toString()
+  );
 }
 function getPlayerName(p: any): string {
   return (
-    (p?.full_name ??
-      p?.players?.full_name ??
-      p?.player_name ??
-      getPlayerId(p)) as string
-  ).toString();
+    (p?.full_name ?? p?.players?.full_name ?? p?.player_name ?? getPlayerId(p)).toString()
+  );
 }
-
 function uniqueBy<T>(arr: T[], keyFn: (x: T) => string) {
   const seen = new Set<string>();
   const out: T[] = [];
@@ -44,8 +36,6 @@ function uniqueBy<T>(arr: T[], keyFn: (x: T) => string) {
   }
   return out;
 }
-
-// simple CSV parser for "Name,MLBAMID"
 function parseMapCsv(csv: string): Record<string, string> {
   const lines = csv.split(/\r?\n/).filter(Boolean);
   if (lines.length === 0) return {};
@@ -61,8 +51,6 @@ function parseMapCsv(csv: string): Record<string, string> {
   }
   return map;
 }
-
-// Fetch from your actual route location: /api/cron/participants
 async function fetchParticipants(gameIds: string[]): Promise<Record<string, Participant[]>> {
   if (gameIds.length === 0) return {};
   const url = `/api/cron/participants?game_ids=${encodeURIComponent(gameIds.join(","))}`;
@@ -70,8 +58,6 @@ async function fetchParticipants(gameIds: string[]): Promise<Record<string, Part
   const json = await res.json().catch(() => null);
   const out: Record<string, Participant[]> = {};
   if (!json) return out;
-
-  // Accept {ok:true,data:{gid:[…]}} or plain {gid:[…]}
   if (json.ok && json.data && typeof json.data === "object") {
     Object.entries(json.data).forEach(([gid, arr]) => (out[gid] = Array.isArray(arr) ? (arr as Participant[]) : []));
     return out;
@@ -97,7 +83,6 @@ export function PlayersPanel({
   const [nameToId, setNameToId] = useState<Record<string, string>>({});
   const [inlineOrFetched, setInlineOrFetched] = useState<Record<string, Participant[]>>({}); // game_id -> participants[]
 
-  // load /public/map.csv once
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -106,46 +91,35 @@ export function PlayersPanel({
         const txt = await res.text();
         if (!alive) return;
         setNameToId(parseMapCsv(txt));
-      } catch {
-        // ignore
-      }
+      } catch {}
     })();
     return () => {
       alive = false;
     };
   }, []);
 
-  // Merge inline participants and fetched participants for selected games
   useEffect(() => {
     let alive = true;
     (async () => {
-      // Inline first
       const base: Record<string, Participant[]> = {};
       for (const g of games) {
         if (Array.isArray(g.participants)) base[g.game_id] = g.participants;
       }
-      // Fetch missing for selected games
-      const missing: string[] = selectedGameIds.filter((gid) => !base[gid]);
+      const missing = selectedGameIds.filter((gid) => !base[gid]);
       if (missing.length > 0) {
         try {
           const fetched = await fetchParticipants(missing);
           if (!alive) return;
           for (const gid of Object.keys(fetched)) base[gid] = fetched[gid] || [];
-        } catch {
-          // ignore
-        }
+        } catch {}
       }
       if (alive) setInlineOrFetched(base);
     })();
-
     return () => {
       alive = false;
     };
   }, [JSON.stringify(games), JSON.stringify(selectedGameIds)]);
 
-  // Build player pool:
-  // - if games selected: union participants for those games
-  // - if none selected: union participants for all games
   const pool = useMemo(() => {
     const useIds = selectedGameIds.length > 0 ? selectedGameIds : games.map((g) => g.game_id);
     const participants = useIds.flatMap((gid) => inlineOrFetched[gid] ?? []);
@@ -193,7 +167,6 @@ export function PlayersPanel({
 
   return (
     <div className="flex flex-col gap-2">
-      {/* Controls */}
       <div className="flex items-center gap-2">
         <input
           value={q}
@@ -206,7 +179,6 @@ export function PlayersPanel({
         </button>
       </div>
 
-      {/* List */}
       <div className="max-h-80 overflow-y-auto pr-1 border rounded-md">
         {pool.length === 0 ? (
           <div className="text-xs text-gray-500 p-3">No players match your search.</div>
