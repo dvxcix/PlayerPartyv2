@@ -26,7 +26,4 @@ export function HeadshotImg({ name, mlbamId, size = 20, className = "", title }:
   );
 }
 
-// Also export default so either import style works:
-//   import HeadshotImg from "@/components/HeadshotImg"
-//   import { HeadshotImg } from "@/components/HeadshotImg"
 export default HeadshotImg;
