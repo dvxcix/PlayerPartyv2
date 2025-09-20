@@ -1,6 +1,9 @@
 // app/dashboard/page.tsx
 "use client";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
 import { MultiGamePicker } from "@/components/MultiGamePicker";
@@ -89,9 +92,7 @@ async function fetchGames(): Promise<Game[]> {
         participants: parts,
       } as Game;
     })
-    // **Show today only (ET)**
     .filter((g) => ymdET(g.commence_time) === today)
-    // **Sort by start time asc**
     .sort((a, b) => new Date(a.commence_time).getTime() - new Date(b.commence_time).getTime());
 
   return norm;
@@ -301,7 +302,14 @@ export default function DashboardPage() {
           <div className="p-3">
             <OddsChart
               gameIds={selectedGameIds}
-              gameDates={gameDates}
+              gameDates={useMemo(() => {
+                const map: Record<string, string> = {};
+                for (const g of games) {
+                  const d = ymdET(g.commence_time);
+                  if (g.game_id && d) map[g.game_id] = d;
+                }
+                return map;
+              }, [games])}
               players={selectedPlayers}
               marketKey={market}
               outcome={outcome}
