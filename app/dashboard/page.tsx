@@ -10,6 +10,13 @@ import { OddsChart } from "@/components/OddsChart";
 type MarketKey = "batter_home_runs" | "batter_first_home_run";
 type OutcomeKey = "over" | "under" | "yes" | "no";
 
+type Participant = {
+  player_id?: string;
+  full_name?: string;
+  team_abbr?: string;
+  players?: { full_name?: string };
+};
+
 type Game = {
   game_id: string;
   commence_time: string; // ISO
@@ -19,7 +26,7 @@ type Game = {
   away_team_abbr?: string;
   home_abbr?: string;
   away_abbr?: string;
-  participants?: { player_id: string; full_name?: string; team_abbr?: string }[];
+  participants?: Participant[];
 };
 
 // Get YYYY-MM-DD in America/New_York (defensive)
@@ -64,43 +71,61 @@ export default function DashboardPage() {
   const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
 
-  // Robust games fetch: accept array OR {games} OR {ok,games}
+  // Robust games fetch: accept array OR {games} OR {ok,data}
   useEffect(() => {
     let alive = true;
     (async () => {
       setGamesError(null);
       try {
-        const res = await fetch("/api/games?with_participants=1", { cache: "no-store" });
+        // You currently get the shape from /api/players. Keep this URL if that’s what you’re using.
+        const res = await fetch("/api/players?with_participants=1", { cache: "no-store" });
         const txt = await res.text();
         let payload: any;
         try {
           payload = JSON.parse(txt);
         } catch {
-          throw new Error(`/api/games returned non-JSON: ${txt.slice(0, 200)}`);
+          throw new Error(`Non-JSON from /api/players: ${txt.slice(0, 200)}`);
         }
 
         let list: any[] | null = null;
         if (Array.isArray(payload)) list = payload;
         else if (payload && Array.isArray(payload.games)) list = payload.games;
-        else if (payload && payload.ok && Array.isArray(payload.games)) list = payload.games;
+        else if (payload && Array.isArray(payload.data)) list = payload.data; // <-- your sample
+        else if (payload && payload.ok && Array.isArray(payload.data)) list = payload.data;
 
         if (!list) throw new Error("No games array in response");
         if (!alive) return;
 
-        // ✅ Clean nullish-coalescing (no `?? null ?? undefined`)
+        // Normalize shape
         const norm: Game[] = list
-          .filter((g) => g && g.game_id && g.commence_time)
-          .map((g) => ({
-            game_id: String(g.game_id),
-            commence_time: g.commence_time,
-            home_team: g.home_team ?? g.home ?? undefined,
-            away_team: g.away_team ?? g.away ?? undefined,
-            home_team_abbr: g.home_team_abbr ?? g.home_abbr ?? g.home_team ?? g.home ?? undefined,
-            away_team_abbr: g.away_team_abbr ?? g.away_abbr ?? g.away_team ?? g.away ?? undefined,
-            home_abbr: g.home_abbr ?? g.home_team_abbr ?? undefined,
-            away_abbr: g.away_abbr ?? g.away_team_abbr ?? undefined,
-            participants: Array.isArray(g.participants) ? g.participants : undefined,
-          }));
+          .filter((g) => g && (g.game_id || g.id) && g.commence_time)
+          .map((g) => {
+            const game_id = String(g.game_id ?? g.id);
+            const home_abbr = (g.home_team_abbr ?? g.home_abbr ?? g.home ?? "").toString();
+            const away_abbr = (g.away_team_abbr ?? g.away_abbr ?? g.away ?? "").toString();
+
+            // participants may have {players:{full_name}}
+            let parts: Participant[] | undefined = undefined;
+            if (Array.isArray(g.participants)) {
+              parts = g.participants.map((p: any) => ({
+                player_id: p.player_id ?? p.id ?? p.players?.full_name ?? undefined,
+                full_name: p.full_name ?? p.players?.full_name ?? p.player_name ?? undefined,
+                team_abbr: p.team_abbr ?? undefined,
+              }));
+            }
+
+            return {
+              game_id,
+              commence_time: g.commence_time,
+              home_team: g.home_team ?? g.home ?? undefined,
+              away_team: g.away_team ?? g.away ?? undefined,
+              home_team_abbr: home_abbr || undefined,
+              away_team_abbr: away_abbr || undefined,
+              home_abbr: home_abbr || undefined,
+              away_abbr: away_abbr || undefined,
+              participants: parts,
+            } as Game;
+          });
 
         setGames(norm);
       } catch (e: any) {
@@ -240,9 +265,7 @@ export default function DashboardPage() {
             {showGames && (
               <div className="p-3">
                 {gamesError ? (
-                  <div className="text-xs text-red-600 break-words">
-                    Failed to load games: {gamesError}
-                  </div>
+                  <div className="text-xs text-red-600 break-words">Failed to load games: {gamesError}</div>
                 ) : (
                   <MultiGamePicker games={games} value={selectedGameIds} onChange={setSelectedGameIds} />
                 )}
