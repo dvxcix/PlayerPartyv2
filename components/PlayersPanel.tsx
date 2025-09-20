@@ -1,149 +1,112 @@
 // components/PlayersPanel.tsx
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import HeadshotImg from "@/components/HeadshotImg";
 
-type Game = {
-  id?: string;
-  game_id?: string;
-  home_team_abbr?: string;
-  away_team_abbr?: string;
-  commence_time?: string;
-  participants?: Array<{
-    player_id: string; // your API uses player name as id in participants
-    team_abbr?: string;
-    players?: { full_name?: string };
-  }>;
-};
+export type PlayerMin = { player_id: string; full_name: string };
 
-type PlayerLike = { player_id: string; full_name: string };
-
-type Props = {
-  games: Game[];
+export default function PlayersPanel({
+  selectedGameIds,
+  value,
+  onChange,
+}: {
   selectedGameIds: string[];
-  value: PlayerLike[];
-  onChange: (players: PlayerLike[]) => void;
-};
-
-function uniqBy<T, K extends string>(arr: T[], key: (t: T) => K): T[] {
-  const seen = new Set<K>();
-  const out: T[] = [];
-  for (const x of arr) {
-    const k = key(x);
-    if (!seen.has(k)) {
-      seen.add(k);
-      out.push(x);
-    }
-  }
-  return out;
-}
-
-export function PlayersPanel({ games, selectedGameIds, value, onChange }: Props) {
+  value: PlayerMin[];
+  onChange: (players: PlayerMin[]) => void;
+}) {
+  const [loading, setLoading] = useState(false);
+  const [players, setPlayers] = useState<PlayerMin[]>([]);
   const [q, setQ] = useState("");
 
-  const visiblePlayers: PlayerLike[] = useMemo(() => {
-    // Build a list of players from selected games; if none selected, use ALL games
-    const chosen = (selectedGameIds?.length
-      ? games.filter((g) => selectedGameIds.includes(String(g.id ?? g.game_id)))
-      : games) as Game[];
-
-    const all: PlayerLike[] = [];
-    for (const g of chosen) {
-      for (const p of g.participants ?? []) {
-        const full = p.players?.full_name || p.player_id || "";
-        if (!full) continue;
-        all.push({ player_id: p.player_id, full_name: full });
+  useEffect(() => {
+    let stop = false;
+    (async () => {
+      try {
+        setLoading(true);
+        const qs =
+          selectedGameIds.length > 0
+            ? `?game_ids=${encodeURIComponent(selectedGameIds.join(","))}`
+            : "";
+        const res = await fetch(`/api/players${qs}`, { cache: "no-store" });
+        const json = await res.json();
+        if (!stop) {
+          if (json?.ok && Array.isArray(json.data)) setPlayers(json.data);
+          else setPlayers([]);
+        }
+      } finally {
+        if (!stop) setLoading(false);
       }
-    }
-    // Deduplicate by player_id (which in your data equals the name)
-    const deduped = uniqBy(all, (x) => x.player_id);
-    if (!q.trim()) return deduped;
-    const needle = q.toLowerCase();
-    return deduped.filter((p) => p.full_name.toLowerCase().includes(needle));
-  }, [games, selectedGameIds, q]);
+    })();
+    return () => {
+      stop = true;
+    };
+  }, [selectedGameIds]);
 
-  const selectedMap = useMemo(() => {
-    const m = new Map<string, boolean>();
-    value.forEach((p) => m.set(p.player_id, true));
-    return m;
-  }, [value]);
+  const filtered = useMemo(() => {
+    const s = q.trim().toLowerCase();
+    if (!s) return players;
+    return players.filter((p) => p.full_name.toLowerCase().includes(s));
+  }, [players, q]);
 
-  function toggle(p: PlayerLike) {
-    const exists = selectedMap.get(p.player_id);
-    if (exists) {
-      onChange(value.filter((v) => v.player_id !== p.player_id));
-    } else {
-      onChange([...value, p]);
-    }
+  function toggle(p: PlayerMin) {
+    const exists = value.some((x) => x.player_id === p.player_id);
+    if (exists) onChange(value.filter((x) => x.player_id !== p.player_id));
+    else onChange([...value, p]);
   }
 
-  function selectAllVisible() {
-    const map = new Map(value.map((v) => [v.player_id, true]));
-    const merged = [...value];
-    for (const p of visiblePlayers) {
-      if (!map.has(p.player_id)) merged.push(p);
-    }
+  function selectAll() {
+    const ids = new Set(value.map((v) => v.player_id));
+    const merged = [...value, ...filtered.filter((p) => !ids.has(p.player_id))];
     onChange(merged);
   }
 
   function clearAll() {
-    onChange([]);
+    onChange(value.filter((v) => !filtered.some((p) => p.player_id === v.player_id)));
   }
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="space-y-2">
       <div className="flex items-center gap-2">
         <input
-          className="w-full border rounded-md px-3 py-2 text-sm"
+          className="w-full border rounded-md px-2 py-1 text-sm"
           placeholder="Search players…"
           value={q}
           onChange={(e) => setQ(e.target.value)}
         />
-        <button
-          className="text-xs px-2 py-1 border rounded-md bg-white hover:bg-gray-50"
-          onClick={selectAllVisible}
-        >
+        <button onClick={selectAll} className="text-xs border rounded-md px-2 py-1 bg-white hover:bg-gray-50">
           Select all
         </button>
-        <button
-          className="text-xs px-2 py-1 border rounded-md bg-white hover:bg-gray-50"
-          onClick={clearAll}
-        >
+        <button onClick={clearAll} className="text-xs border rounded-md px-2 py-1 bg-white hover:bg-gray-50">
           Clear
         </button>
       </div>
 
-      <div className="max-h-80 overflow-auto border rounded-md">
-        {visiblePlayers.length === 0 ? (
-          <div className="p-3 text-sm text-gray-500">No players match your search.</div>
-        ) : (
-          <ul className="divide-y">
-            {visiblePlayers.map((p) => {
-              const active = !!selectedMap.get(p.player_id);
+      <div className="max-h-80 overflow-auto pr-1">
+        <ul className="space-y-1">
+          {loading && <li className="text-sm text-gray-500">Loading…</li>}
+          {!loading && filtered.length === 0 && (
+            <li className="text-sm text-gray-500">No players match.</li>
+          )}
+          {!loading &&
+            filtered.map((p) => {
+              const selected = value.some((v) => v.player_id === p.player_id);
               return (
-                <li
-                  key={p.player_id}
-                  className={`flex items-center gap-2 px-3 py-2 cursor-pointer ${
-                    active ? "bg-blue-50" : "hover:bg-gray-50"
-                  }`}
-                  onClick={() => toggle(p)}
-                >
-                  <HeadshotImg
-                    name={p.full_name}
-                    size={20}
-                    className="rounded-full object-cover"
-                  />
-                  <span className="text-sm">{p.full_name}</span>
+                <li key={p.player_id}>
+                  <button
+                    onClick={() => toggle(p)}
+                    className={`w-full flex items-center gap-2 border rounded-lg px-2 py-1.5 hover:bg-gray-50 ${
+                      selected ? "ring-2 ring-blue-300 bg-blue-50/40" : ""
+                    }`}
+                  >
+                    <HeadshotImg name={p.full_name} className="w-6 h-6 rounded-full" />
+                    <span className="text-sm">{p.full_name}</span>
+                  </button>
                 </li>
               );
             })}
-          </ul>
-        )}
+        </ul>
       </div>
     </div>
   );
 }
-
-// Also default-export so either style works in your page.
-export default PlayersPanel;
