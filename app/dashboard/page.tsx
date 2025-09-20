@@ -20,12 +20,8 @@ type Participant = {
 type Game = {
   game_id: string;
   commence_time: string; // ISO
-  home_team?: string;
-  away_team?: string;
   home_team_abbr?: string;
   away_team_abbr?: string;
-  home_abbr?: string;
-  away_abbr?: string;
   participants?: Participant[];
 };
 
@@ -52,14 +48,53 @@ const MARKETS: { key: MarketKey; label: string; outcomes: OutcomeKey[]; defaultO
   { key: "batter_first_home_run", label: "Batter First Home Run", outcomes: ["yes", "no"], defaultOutcome: "yes" },
 ];
 
-async function fetchJson(url: string): Promise<any | null> {
+async function fetchGames(): Promise<Game[]> {
+  const res = await fetch("/api/games", { cache: "no-store" });
+  const text = await res.text();
+  let json: any;
   try {
-    const res = await fetch(url, { cache: "no-store" });
-    const txt = await res.text();
-    return JSON.parse(txt);
+    json = JSON.parse(text);
   } catch {
-    return null;
+    throw new Error(`Non-JSON from /api/games`);
   }
+
+  // Accept { ok:true, data:[…] } (your current shape), or array, or {games:[…]}
+  const list: any[] = Array.isArray(json)
+    ? json
+    : Array.isArray(json?.data)
+    ? json.data
+    : Array.isArray(json?.games)
+    ? json.games
+    : [];
+
+  if (!Array.isArray(list) || list.length === 0) return [];
+
+  const norm: Game[] = list
+    .filter((g) => g && (g.game_id || g.id) && g.commence_time)
+    .map((g) => {
+      const game_id = String(g.game_id ?? g.id);
+      const home = (g.home_team_abbr ?? g.home_abbr ?? "").toString().toLowerCase();
+      const away = (g.away_team_abbr ?? g.away_abbr ?? "").toString().toLowerCase();
+
+      let parts: Participant[] | undefined = undefined;
+      if (Array.isArray(g.participants)) {
+        parts = g.participants.map((p: any) => ({
+          player_id: p.player_id ?? p.id ?? p.players?.full_name ?? undefined,
+          full_name: p.players?.full_name ?? p.full_name ?? p.player_name ?? undefined,
+          team_abbr: p.team_abbr ?? undefined,
+        }));
+      }
+
+      return {
+        game_id,
+        commence_time: g.commence_time,
+        home_team_abbr: home || undefined,
+        away_team_abbr: away || undefined,
+        participants: parts,
+      };
+    });
+
+  return norm;
 }
 
 export default function DashboardPage() {
@@ -72,93 +107,32 @@ export default function DashboardPage() {
   const [market, setMarket] = useState<MarketKey>("batter_home_runs");
   const [outcome, setOutcome] = useState<OutcomeKey>("over");
 
-  // Panels
   const [showGames, setShowGames] = useState(true);
   const [showPlayers, setShowPlayers] = useState(true);
 
-  // Refresh
   const [refreshing, setRefreshing] = useState(false);
   const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
 
-  // ROBUST GAMES FETCH (stays on /api/games)
   useEffect(() => {
     let alive = true;
     (async () => {
-      setGamesError(null);
-
-      // Try with participants hint first, then without
-      const candidates = ["/api/games?with_participants=1", "/api/games"];
-
-      let list: any[] | null = null;
-      let lastErr = "No games array in response";
-
-      for (const url of candidates) {
-        const payload = await fetchJson(url);
-        if (!payload) {
-          lastErr = `Non-JSON from ${url}`;
-          continue;
-        }
-        if (Array.isArray(payload)) {
-          list = payload;
-          break;
-        }
-        if (payload.games && Array.isArray(payload.games)) {
-          list = payload.games;
-          break;
-        }
-        if (payload.ok && Array.isArray(payload.games)) {
-          list = payload.games;
-          break;
-        }
-        lastErr = `No games array in response`;
-      }
-
-      if (!alive) return;
-
-      if (!list) {
+      try {
+        setGamesError(null);
+        const g = await fetchGames();
+        if (!alive) return;
+        setGames(g);
+      } catch (e: any) {
+        if (!alive) return;
+        setGamesError(e?.message ?? String(e));
         setGames([]);
-        setGamesError(lastErr);
-        return;
       }
-
-      const norm: Game[] = list
-        .filter((g) => g && (g.game_id || g.id) && g.commence_time)
-        .map((g) => {
-          const game_id = String(g.game_id ?? g.id);
-          const home_abbr = (g.home_team_abbr ?? g.home_abbr ?? g.home_team ?? g.home ?? "").toString().toLowerCase();
-          const away_abbr = (g.away_team_abbr ?? g.away_abbr ?? g.away_team ?? g.away ?? "").toString().toLowerCase();
-
-          let parts: Participant[] | undefined = undefined;
-          if (Array.isArray(g.participants)) {
-            parts = g.participants.map((p: any) => ({
-              player_id: p.player_id ?? p.id ?? p.players?.full_name ?? undefined,
-              full_name: p.full_name ?? p.players?.full_name ?? p.player_name ?? undefined,
-              team_abbr: p.team_abbr ?? undefined,
-            }));
-          }
-
-          return {
-            game_id,
-            commence_time: g.commence_time,
-            home_team: g.home_team ?? g.home ?? undefined,
-            away_team: g.away_team ?? g.away ?? undefined,
-            home_team_abbr: home_abbr || undefined,
-            away_team_abbr: away_abbr || undefined,
-            home_abbr: home_abbr || undefined,
-            away_abbr: away_abbr || undefined,
-            participants: parts,
-          } as Game;
-        });
-
-      setGames(norm);
     })();
     return () => {
       alive = false;
     };
   }, []);
 
-  // Keep outcome synced with market
   useEffect(() => {
     const def = MARKETS.find((m) => m.key === market)?.defaultOutcome;
     if (def) setOutcome(def);
@@ -170,8 +144,8 @@ export default function DashboardPage() {
     return `${countGames} game${countGames === 1 ? "" : "s"} · ${countPlayers} player${countPlayers === 1 ? "" : "s"}`;
   }, [selectedPlayers, selectedGameIds]);
 
-  // ET date map for games
-  const gameDates: Record<string, string> = useMemo(() => {
+  // Map of game_id -> ET date of that game
+  const gameDates = useMemo(() => {
     const map: Record<string, string> = {};
     for (const g of games) {
       const d = ymdET(g.commence_time);
@@ -212,7 +186,6 @@ export default function DashboardPage() {
             </div>
 
             <div className="hidden md:flex items-center gap-2">
-              {/* Market */}
               <div className="flex items-center gap-1">
                 {MARKETS.map((m) => (
                   <button
@@ -226,7 +199,6 @@ export default function DashboardPage() {
                   </button>
                 ))}
               </div>
-              {/* Outcome */}
               <div className="flex items-center gap-1">
                 {MARKETS.find((m) => m.key === market)!.outcomes.map((o) => (
                   <button
@@ -330,14 +302,7 @@ export default function DashboardPage() {
           <div className="p-3">
             <OddsChart
               gameIds={selectedGameIds}
-              gameDates={useMemo(() => {
-                const map: Record<string, string> = {};
-                for (const g of games) {
-                  const d = ymdET(g.commence_time);
-                  if (g?.game_id && d) map[g.game_id] = d;
-                }
-                return map;
-              }, [games])}
+              gameDates={gameDates}
               players={selectedPlayers}
               marketKey={market}
               outcome={outcome}
