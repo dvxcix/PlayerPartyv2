@@ -71,7 +71,7 @@ export default function DashboardPage() {
       setGamesError(null);
       try {
         const res = await fetch("/api/games?with_participants=1", { cache: "no-store" });
-        const txt = await res.text(); // be robust to non-JSON errors
+        const txt = await res.text();
         let payload: any;
         try {
           payload = JSON.parse(txt);
@@ -87,16 +87,16 @@ export default function DashboardPage() {
         if (!list) throw new Error("No games array in response");
         if (!alive) return;
 
-        // Basic shape normalize
+        // ✅ Clean nullish-coalescing (no `?? null ?? undefined`)
         const norm: Game[] = list
           .filter((g) => g && g.game_id && g.commence_time)
           .map((g) => ({
             game_id: String(g.game_id),
             commence_time: g.commence_time,
-            home_team: g.home_team ?? g.home ?? null ?? undefined,
-            away_team: g.away_team ?? g.away ?? null ?? undefined,
-            home_team_abbr: g.home_team_abbr ?? g.home_abbr ?? g.home ?? undefined,
-            away_team_abbr: g.away_team_abbr ?? g.away_abbr ?? g.away ?? undefined,
+            home_team: g.home_team ?? g.home ?? undefined,
+            away_team: g.away_team ?? g.away ?? undefined,
+            home_team_abbr: g.home_team_abbr ?? g.home_abbr ?? g.home_team ?? g.home ?? undefined,
+            away_team_abbr: g.away_team_abbr ?? g.away_abbr ?? g.away_team ?? g.away ?? undefined,
             home_abbr: g.home_abbr ?? g.home_team_abbr ?? undefined,
             away_abbr: g.away_abbr ?? g.away_team_abbr ?? undefined,
             participants: Array.isArray(g.participants) ? g.participants : undefined,
