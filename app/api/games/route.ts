@@ -6,12 +6,31 @@ import { normalizeTeamAbbr } from "@/lib/odds";
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE!;
 
-// Filter to "today" (UTC) — adjust if you later want US/Eastern
-function todayBoundsUTC() {
+function easternBoundsToday() {
+  // Build “today” in America/New_York, then return UTC ISO bounds
+  const tz = "America/New_York";
   const now = new Date();
-  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0));
-  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0));
-  return { start: start.toISOString(), end: end.toISOString() };
+
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const [{ value: mm }, , { value: dd }, , { value: yyyy }] = fmt.formatToParts(now);
+  // 00:00:00 ET to 24:00:00 ET
+  const startLocal = new Date(`${yyyy}-${mm}-${dd}T00:00:00`);
+  const endLocal = new Date(`${yyyy}-${mm}-${dd}T24:00:00`);
+
+  // Convert “local ET clock time” to actual ET timestamps via toLocaleString w/ tz, then back to Date
+  const startET = new Date(
+    new Date(startLocal.toLocaleString("en-US", { timeZone: tz })).toISOString()
+  );
+  const endET = new Date(
+    new Date(endLocal.toLocaleString("en-US", { timeZone: tz })).toISOString()
+  );
+
+  return { start: startET.toISOString(), end: endET.toISOString() };
 }
 
 export async function GET() {
@@ -21,9 +40,8 @@ export async function GET() {
     }
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
-    const { start, end } = todayBoundsUTC();
+    const { start, end } = easternBoundsToday();
 
-    // Your games table columns: game_id, game_date, home_team, away_team, commence_time, created_at, sport_key
     const { data, error } = await supabase
       .from("games")
       .select("game_id, home_team, away_team, commence_time")
@@ -40,14 +58,13 @@ export async function GET() {
         const homeAbbr = normalizeTeamAbbr(g.home_team).toLowerCase();
         const awayAbbr = normalizeTeamAbbr(g.away_team).toLowerCase();
         return {
-          // downstream expects both id and game_id as strings
           id: String(g.game_id),
           game_id: String(g.game_id),
           home_team_abbr: homeAbbr,
           away_team_abbr: awayAbbr,
           commence_time: g.commence_time, // ISO
         };
-      });
+      }) ?? [];
 
     return NextResponse.json({ ok: true, data: rows }, { status: 200 });
   } catch (e: any) {
