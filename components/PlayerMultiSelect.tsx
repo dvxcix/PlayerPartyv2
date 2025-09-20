@@ -1,28 +1,18 @@
-"use client";
-import { useMemo } from "react";
-
-interface PlayerMultiSelectProps {
-  players: {
-    player_id: string;
-    full_name: string;
-    game_id: string;
-  }[];
-  selectedPlayers: string[];
-  onChange: (players: string[]) => void;
+// components/PlayerMultiSelect.tsx
+interface Player {
+  player_id: string;
+  full_name: string;
+  game_id: string;
 }
 
-export default function PlayerMultiSelect({
-  players,
-  selectedPlayers,
-  onChange,
-}: PlayerMultiSelectProps) {
-  // Sort players alphabetically so it's easier to find
-  const sortedPlayers = useMemo(() => {
-    return [...players].sort((a, b) => a.full_name.localeCompare(b.full_name));
-  }, [players]);
+interface Props {
+  players: Player[];
+  selectedPlayers: string[];
+  onChange: (ids: string[]) => void;
+}
 
-  // Toggle a player on/off
-  function togglePlayer(id: string) {
+export default function PlayerMultiSelect({ players, selectedPlayers, onChange }: Props) {
+  function toggle(id: string) {
     if (selectedPlayers.includes(id)) {
       onChange(selectedPlayers.filter((p) => p !== id));
     } else {
@@ -31,19 +21,19 @@ export default function PlayerMultiSelect({
   }
 
   return (
-    <div className="max-h-64 overflow-y-auto border rounded p-2 bg-white space-y-1">
-      {sortedPlayers.map((p) => (
-        <div
+    <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+      {players.map((p) => (
+        <button
           key={p.player_id}
-          onClick={() => togglePlayer(p.player_id)}
-          className={`p-2 rounded cursor-pointer ${
+          onClick={() => toggle(p.player_id)}
+          className={`p-2 rounded border ${
             selectedPlayers.includes(p.player_id)
               ? "bg-green-500 text-white"
-              : "bg-gray-100 hover:bg-gray-200"
+              : "bg-white hover:bg-gray-100"
           }`}
         >
           {p.full_name}
-        </div>
+        </button>
       ))}
     </div>
   );
