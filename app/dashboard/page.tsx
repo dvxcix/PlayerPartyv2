@@ -47,7 +47,6 @@ export default function DashboardPage() {
       selectedGameIds.includes(g.game_id)
     );
 
-    // Flatten all participants from selected games
     const allPlayers = selectedGames.flatMap((g) =>
       (g.participants || []).map((p: any) => ({
         player_id: p.player_id,
@@ -69,7 +68,6 @@ export default function DashboardPage() {
 
       setLoading(true);
       try {
-        // Pass both player_ids + game_ids so we only get today's data
         const params = new URLSearchParams();
         selectedPlayers.forEach((p) => params.append("player_ids", p));
         selectedGameIds.forEach((g) => params.append("game_ids", g));
