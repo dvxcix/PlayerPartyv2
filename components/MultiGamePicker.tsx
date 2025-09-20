@@ -5,9 +5,13 @@ import Image from "next/image";
 
 type Game = {
   game_id: string;
-  home_team_abbr: string;
-  away_team_abbr: string;
-  commence_time?: string | null;
+  commence_time: string; // ISO
+  home_team?: string;
+  away_team?: string;
+  home_team_abbr?: string;
+  away_team_abbr?: string;
+  home_abbr?: string;
+  away_abbr?: string;
 };
 
 export function MultiGamePicker({
@@ -19,70 +23,92 @@ export function MultiGamePicker({
   value: string[];
   onChange: (ids: string[]) => void;
 }) {
+  const selected = new Set(value);
+
   const toggle = (id: string) => {
-    onChange(value.includes(id) ? value.filter((x) => x !== id) : [...value, id]);
+    const next = new Set(value);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    onChange(Array.from(next));
   };
 
-  const fmt = (iso?: string | null) => {
-    if (!iso) return "";
-    const d = new Date(iso);
-    return d.toLocaleString(undefined, { month: "numeric", day: "numeric", hour: "numeric", minute: "2-digit" });
-  };
-
-  const logoSrc = (abbr: string) => `/logos/${(abbr || "").toLowerCase().trim()}.png`;
-
+  // Fixed height with internal scroll; compact items; logos when abbr is available
   return (
-    // Fixed height + internal vertical scroll to keep the card compact
-    <div className="max-h-80 overflow-y-auto pr-1"> 
-      <div className="space-y-2">
-        {games.map((g) => {
-          const id = g.game_id;
-          const selected = value.includes(id);
-          const home = (g.home_team_abbr || "").toLowerCase();
-          const away = (g.away_team_abbr || "").toLowerCase();
+    <div className="max-h-80 overflow-y-auto pr-1 border rounded-md">
+      {(!games || games.length === 0) ? (
+        <div className="text-xs text-gray-500 p-3">No games found.</div>
+      ) : (
+        <ul className="divide-y">
+          {games.map((g) => {
+            const id = g.game_id;
+            const isChecked = selected.has(id);
 
-          return (
-            <label
-              key={id}
-              className={`flex items-center justify-between w-full border rounded-xl px-3 py-2 cursor-pointer transition ${
-                selected ? "border-blue-400 bg-blue-50/50" : "border-gray-200 hover:bg-gray-50"
-              }`}
-            >
-              <div className="flex items-center gap-3">
-                <input
-                  type="checkbox"
-                  checked={selected}
-                  onChange={() => toggle(id)}
-                  className="h-4 w-4 accent-blue-600 cursor-pointer"
-                />
-                <div className="flex items-center gap-1">
-                  <Image
-                    src={logoSrc(home)}
-                    alt={home.toUpperCase()}
-                    width={20}
-                    height={20}
-                    onError={(e) => ((e.target as HTMLImageElement).src = "/logos/_blank.png")}
-                  />
-                  <span className="font-medium uppercase">{home}</span>
-                </div>
-                <span className="text-gray-400">@</span>
-                <div className="flex items-center gap-1">
-                  <Image
-                    src={logoSrc(away)}
-                    alt={away.toUpperCase()}
-                    width={20}
-                    height={20}
-                    onError={(e) => ((e.target as HTMLImageElement).src = "/logos/_blank.png")}
-                  />
-                  <span className="font-medium uppercase">{away}</span>
-                </div>
-              </div>
-              <div className="text-xs text-gray-500">{fmt(g.commence_time)}</div>
-            </label>
-          );
-        })}
-        {games.length === 0 && <div className="text-xs text-gray-500 px-1 py-2">No games for today.</div>}
-      </div>
+            const homeAbbr =
+              (g.home_team_abbr || g.home_abbr || "").toLowerCase();
+            const awayAbbr =
+              (g.away_team_abbr || g.away_abbr || "").toLowerCase();
+
+            const homeLogo = homeAbbr ? `/logos/${homeAbbr}.png` : null;
+            const awayLogo = awayAbbr ? `/logos/${awayAbbr}.png` : null;
+
+            const t = new Date(g.commence_time);
+            const timeLabel = t.toLocaleString(undefined, {
+              month: "numeric",
+              day: "numeric",
+              hour: "numeric",
+              minute: "2-digit",
+            });
+
+            return (
+              <li key={id}>
+                <label
+                  className="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-gray-50"
+                  onClick={() => toggle(id)}
+                >
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 accent-blue-600"
+                      checked={isChecked}
+                      onChange={() => toggle(id)}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                    <div className="flex items-center gap-2">
+                      {homeLogo ? (
+                        <Image
+                          src={homeLogo}
+                          alt={homeAbbr || "home"}
+                          width={20}
+                          height={20}
+                          className="rounded"
+                        />
+                      ) : (
+                        <div className="w-5 h-5 rounded bg-gray-200" />
+                      )}
+                      <span className="text-sm">
+                        {(g.home_team ?? homeAbbr?.toUpperCase() ?? "HOME")} @{" "}
+                        {(g.away_team ?? awayAbbr?.toUpperCase() ?? "AWAY")}
+                      </span>
+                      {awayLogo ? (
+                        <Image
+                          src={awayLogo}
+                          alt={awayAbbr || "away"}
+                          width={20}
+                          height={20}
+                          className="rounded"
+                        />
+                      ) : (
+                        <div className="w-5 h-5 rounded bg-gray-200" />
+                      )}
+                    </div>
+                  </div>
+                  <div className="text-xs text-gray-500">{timeLabel}</div>
+                </label>
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </div>
   );
 }
