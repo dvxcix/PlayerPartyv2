@@ -4,7 +4,7 @@
 import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
 import MultiGamePicker from "@/components/MultiGamePicker";
-import PlayersPanel from "@/components/PlayersPanel";
+import { PlayersPanel } from "@/components/PlayersPanel";
 import OddsChart from "@/components/OddsChart";
 
 type MarketKey = "batter_home_runs" | "batter_first_home_run";
@@ -31,24 +31,14 @@ export default function DashboardPage() {
   const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
 
-  // Load today's games (expects /api/games → { ok, games })
   useEffect(() => {
     (async () => {
-      try {
-        const res = await fetch("/api/games", { cache: "no-store" });
-        const json = await res.json();
-        if (json?.ok && Array.isArray(json.games)) {
-          setGames(json.games);
-        } else {
-          console.error("Failed to load games:", json);
-        }
-      } catch (e) {
-        console.error("Failed to load games:", e);
-      }
+      const res = await fetch("/api/games", { cache: "no-store" });
+      const json = await res.json();
+      if (json?.ok && Array.isArray(json.games)) setGames(json.games);
     })();
   }, []);
 
-  // When market changes, set its default outcome
   useEffect(() => {
     const def = MARKETS.find((m) => m.key === market)?.defaultOutcome;
     if (def) setOutcome(def);
@@ -82,21 +72,14 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* STATIC sticky header */}
+      {/* Static header */}
       <div className="sticky top-0 z-30 bg-white border-b">
         <div className="max-w-7xl mx-auto px-4">
           <div className="flex items-center justify-between py-2">
             <div className="flex items-center gap-3">
-              <Image
-                src="/miscimg/playerpartylogo.png"
-                alt="PlayerParty"
-                width={128}
-                height={32}
-                priority
-              />
+              <Image src="/miscimg/playerpartylogo.png" alt="PlayerParty" width={128} height={32} priority />
               <span className="hidden sm:inline text-xs text-gray-500">{selectedSummary}</span>
             </div>
-
             <div className="hidden md:flex items-center gap-2">
               {/* Market */}
               <div className="flex items-center gap-1">
@@ -127,7 +110,6 @@ export default function DashboardPage() {
                 ))}
               </div>
             </div>
-
             <div className="flex items-center gap-2">
               <button
                 onClick={manualRefresh}
@@ -142,8 +124,6 @@ export default function DashboardPage() {
             </div>
           </div>
         </div>
-
-        {/* micro toast under header */}
         {refreshMsg && (
           <div className="bg-white/80 backdrop-blur border-t">
             <div className="max-w-7xl mx-auto px-4 py-2 text-xs text-gray-700">{refreshMsg}</div>
@@ -153,13 +133,12 @@ export default function DashboardPage() {
 
       {/* Content */}
       <div className="max-w-7xl mx-auto px-4 py-6 space-y-6">
-        {/* Collapsible Controls */}
         <div className="grid gap-4 lg:grid-cols-2">
           {/* Games */}
           <div className="rounded-2xl border bg-white shadow-sm">
             <div className="p-3 border-b flex items-center justify-between">
               <div>
-                <div className="font-medium">Games</div>
+                <div className="font-medium">Games (Today Only)</div>
                 <div className="text-xs text-gray-500">Pick any games; compare players across them.</div>
               </div>
               <button
@@ -207,9 +186,9 @@ export default function DashboardPage() {
         <div className="rounded-2xl border bg-white shadow-sm">
           <div className="p-3 border-b">
             <div className="font-medium">
-              Price History — {market === "batter_home_runs" ? "Over/Under 0.5 HR" : "First HR Yes/No"} — {outcome.toUpperCase()}
+              Odds History — {market === "batter_home_runs" ? "Over/Under 0.5 HR" : "First HR Yes/No"} — {outcome.toUpperCase()}
             </div>
-            <div className="text-xs text-gray-500">Hover a line or dot for details. Zoom, pan, brush. Export CSV.</div>
+            <div className="text-xs text-gray-500">Hover a line or dot for details. Zoom, pan, brush.</div>
           </div>
           <div className="p-3">
             <OddsChart
