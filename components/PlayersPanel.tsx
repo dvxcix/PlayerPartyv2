@@ -8,9 +8,9 @@ type Participant = {
   full_name?: string;
   team_abbr?: string;
 };
-
 type Game = {
   game_id: string;
+  commence_time: string;
   participants?: Participant[];
 };
 
@@ -41,12 +41,30 @@ function parseMapCsv(csv: string): Record<string, string> {
   const idIdx = header.indexOf("mlbamid");
   const map: Record<string, string> = {};
   for (let i = 1; i < lines.length; i++) {
-    const cols = lines[i].split(","); // names shouldn't contain commas in your file; if they do, we’d need a stricter CSV parser
+    const cols = lines[i].split(",");
     const name = (cols[nameIdx] ?? "").trim();
     const id = (cols[idIdx] ?? "").trim();
     if (name && id) map[name.toLowerCase()] = id;
   }
   return map;
+}
+
+async function fetchParticipants(gameIds: string[]): Promise<Record<string, Participant[]>> {
+  if (gameIds.length === 0) return {};
+  const res = await fetch(`/api/participants?game_ids=${encodeURIComponent(gameIds.join(","))}`, { cache: "no-store" });
+  const json = await res.json().catch(() => null);
+  // Accept either {ok:true,data:{game_id:[…]}} or {game_id:[…]}
+  const out: Record<string, Participant[]> = {};
+  if (!json) return out;
+  if (json.ok && json.data && typeof json.data === "object") {
+    Object.entries(json.data).forEach(([gid, arr]) => (out[gid] = Array.isArray(arr) ? (arr as Participant[]) : []));
+    return out;
+  }
+  // or plain object keyed by game_id
+  if (typeof json === "object" && !Array.isArray(json)) {
+    Object.entries(json as any).forEach(([gid, arr]) => (out[gid] = Array.isArray(arr) ? (arr as Participant[]) : []));
+  }
+  return out;
 }
 
 export function PlayersPanel({
@@ -62,6 +80,7 @@ export function PlayersPanel({
 }) {
   const [q, setQ] = useState("");
   const [nameToId, setNameToId] = useState<Record<string, string>>({});
+  const [inlineOrFetched, setInlineOrFetched] = useState<Record<string, Participant[]>>({}); // game_id -> participants[]
 
   // load /public/map.csv once on client
   useEffect(() => {
@@ -73,7 +92,7 @@ export function PlayersPanel({
         if (!alive) return;
         setNameToId(parseMapCsv(txt));
       } catch {
-        // ignore; we'll just use default images
+        // ignore; fallbacks will work
       }
     })();
     return () => {
@@ -81,12 +100,41 @@ export function PlayersPanel({
     };
   }, []);
 
-  // Build today’s pool from selected games (or all today’s games if none selected)
-  const pool = useMemo(() => {
-    const gamesToUse =
-      selectedGameIds.length > 0 ? games.filter((g) => selectedGameIds.includes(g.game_id)) : games;
+  // Combine inlined participants (if present) with fetched participants for selected games
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      // Start with any inlined participants from games prop
+      const base: Record<string, Participant[]> = {};
+      for (const g of games) {
+        if (Array.isArray(g.participants)) base[g.game_id] = g.participants;
+      }
 
-    const participants = gamesToUse.flatMap((g) => g.participants ?? []);
+      // If selected games have no inline participants, fetch them
+      const missing: string[] = selectedGameIds.filter((gid) => !base[gid]);
+      if (missing.length > 0) {
+        try {
+          const fetched = await fetchParticipants(missing);
+          if (!alive) return;
+          for (const gid of Object.keys(fetched)) base[gid] = fetched[gid] || [];
+        } catch {
+          // ignore fetch errors; we'll just show none
+        }
+      }
+      if (alive) setInlineOrFetched(base);
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, [JSON.stringify(games), JSON.stringify(selectedGameIds)]);
+
+  // Build pool according to selection: if games selected -> union of those games' participants.
+  // If no games selected -> union of all today's games' participants (inline or fetched)
+  const pool = useMemo(() => {
+    const byGame = inlineOrFetched;
+    const useIds = selectedGameIds.length > 0 ? selectedGameIds : games.map((g) => g.game_id);
+    const participants = useIds.flatMap((gid) => byGame[gid] ?? []);
     const unique = uniqueBy(participants, (p) => getPlayerId(p));
     unique.sort((a, b) => getPlayerName(a).localeCompare(getPlayerName(b)));
 
@@ -100,7 +148,7 @@ export function PlayersPanel({
       player_id: getPlayerId(p),
       full_name: getPlayerName(p),
     }));
-  }, [JSON.stringify(games), JSON.stringify(selectedGameIds), q]);
+  }, [inlineOrFetched, JSON.stringify(selectedGameIds), JSON.stringify(games), q]);
 
   const selectedIds = useMemo(() => new Set(value.map((v) => v.player_id)), [value]);
 
@@ -125,7 +173,6 @@ export function PlayersPanel({
     }
   };
 
-  // resolve image src candidates for a name
   function headshotCandidates(fullName: string) {
     const id = nameToId[fullName.toLowerCase()];
     if (!id) return ["/_default.avif"];
@@ -169,7 +216,6 @@ export function PlayersPanel({
                         checked={checked}
                         onChange={() => toggle(p)}
                       />
-                      {/* Headshot with chained fallbacks */}
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
                         src={src1}
