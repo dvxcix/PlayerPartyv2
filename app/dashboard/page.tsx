@@ -3,9 +3,9 @@
 
 import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
-import { MultiGamePicker } from "@/components/MultiGamePicker";
-import { PlayersPanel } from "@/components/PlayersPanel";
-import { OddsChart } from "@/components/OddsChart";
+import MultiGamePicker from "@/components/MultiGamePicker";
+import PlayersPanel from "@/components/PlayersPanel";
+import OddsChart from "@/components/OddsChart";
 
 type MarketKey = "batter_home_runs" | "batter_first_home_run";
 type OutcomeKey = "over" | "under" | "yes" | "no";
