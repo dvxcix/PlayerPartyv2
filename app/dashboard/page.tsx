@@ -10,22 +10,22 @@ import { OddsChart } from "@/components/OddsChart";
 type MarketKey = "batter_home_runs" | "batter_first_home_run";
 type OutcomeKey = "over" | "under" | "yes" | "no";
 
+// Be permissive so it matches whatever /api/games returns today or tomorrow.
+// (MultiGamePicker also uses optional fields and safe fallbacks.)
 type Game = {
   game_id: string;
   commence_time: string; // ISO
-  home_team: string;
-  away_team: string;
+  home_team?: string;
+  away_team?: string;
+  // either of these may exist, both are optional:
+  home_team_abbr?: string;
+  away_team_abbr?: string;
   home_abbr?: string;
   away_abbr?: string;
   participants?: { player_id: string; full_name?: string; team_abbr?: string }[];
 };
 
-const MARKETS: { key: MarketKey; label: string; outcomes: OutcomeKey[]; defaultOutcome: OutcomeKey }[] = [
-  { key: "batter_home_runs", label: "Batter Home Runs (0.5)", outcomes: ["over", "under"], defaultOutcome: "over" },
-  { key: "batter_first_home_run", label: "Batter First Home Run", outcomes: ["yes", "no"], defaultOutcome: "yes" },
-];
-
-// Get YYYY-MM-DD for a date in America/New_York
+// Get YYYY-MM-DD in America/New_York
 function ymdET(iso: string): string {
   const d = new Date(iso);
   const parts = new Intl.DateTimeFormat("en-US", {
@@ -39,6 +39,11 @@ function ymdET(iso: string): string {
   const day = parts.find((p) => p.type === "day")!.value;
   return `${y}-${m}-${day}`;
 }
+
+const MARKETS: { key: MarketKey; label: string; outcomes: OutcomeKey[]; defaultOutcome: OutcomeKey }[] = [
+  { key: "batter_home_runs", label: "Batter Home Runs (0.5)", outcomes: ["over", "under"], defaultOutcome: "over" },
+  { key: "batter_first_home_run", label: "Batter First Home Run", outcomes: ["yes", "no"], defaultOutcome: "yes" },
+];
 
 export default function DashboardPage() {
   const [games, setGames] = useState<Game[]>([]);
@@ -56,16 +61,20 @@ export default function DashboardPage() {
   const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
 
-  // Load today's games (server route must already filter to "today")
+  // Load today's games (your /api/games already returns only today)
   useEffect(() => {
     (async () => {
       const res = await fetch("/api/games", { cache: "no-store" });
       const json = await res.json();
-      if (json.ok) setGames(json.games || []);
+      if (json?.ok && Array.isArray(json.games)) {
+        setGames(json.games);
+      } else {
+        setGames([]);
+      }
     })();
   }, []);
 
-  // Keep outcome in sync when market changes
+  // Keep outcome synced with market
   useEffect(() => {
     const def = MARKETS.find((m) => m.key === market)?.defaultOutcome;
     if (def) setOutcome(def);
@@ -77,12 +86,12 @@ export default function DashboardPage() {
     return `${countGames} game${countGames === 1 ? "" : "s"} · ${countPlayers} player${countPlayers === 1 ? "" : "s"}`;
   }, [selectedPlayers, selectedGameIds]);
 
-  // Build ET date map for selected games (and pass to chart)
+  // Build ET date map for selected games (pass to chart so it can keep only today’s date)
   const gameDates: Record<string, string> = useMemo(() => {
     const map: Record<string, string> = {};
     for (const g of games) {
-      if (!g.game_id || !g.commence_time) continue;
-      map[g.game_id] = ymdET(g.commence_time); // ET calendar day for this game
+      if (!g?.game_id || !g?.commence_time) continue;
+      map[g.game_id] = ymdET(g.commence_time);
     }
     return map;
   }, [games]);
@@ -109,7 +118,7 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* STATIC sticky header */}
+      {/* Header (static sticky) */}
       <div className="sticky top-0 z-30 bg-white border-b">
         <div className="max-w-7xl mx-auto px-4">
           <div className="flex items-center justify-between py-2">
@@ -190,7 +199,11 @@ export default function DashboardPage() {
             </div>
             {showGames && (
               <div className="p-3">
-                <MultiGamePicker games={games} value={selectedGameIds} onChange={setSelectedGameIds} />
+                <MultiGamePicker
+                  games={games}
+                  value={selectedGameIds}
+                  onChange={setSelectedGameIds}
+                />
               </div>
             )}
           </div>
@@ -228,12 +241,19 @@ export default function DashboardPage() {
             <div className="font-medium">
               Price History — {market === "batter_home_runs" ? "Over/Under 0.5 HR" : "First HR Yes/No"} — {outcome.toUpperCase()}
             </div>
-            <div className="text-xs text-gray-500">Hover a line or dot for details. Zoom, pan, brush. Export CSV.</div>
+            <div className="text-xs text-gray-500">Hover for details. Zoom, pan, brush. Export CSV.</div>
           </div>
           <div className="p-3">
             <OddsChart
               gameIds={selectedGameIds}
-              gameDates={gameDates}  // <-- pass ET date per game
+              gameDates={useMemo(() => {
+                // pass once per render to avoid extra JSON deps in OddsChart
+                const map: Record<string, string> = {};
+                for (const g of games) {
+                  if (g?.game_id && g?.commence_time) map[g.game_id] = ymdET(g.commence_time);
+                }
+                return map;
+              }, [games])}
               players={selectedPlayers}
               marketKey={market}
               outcome={outcome}
