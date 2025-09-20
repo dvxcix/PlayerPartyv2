@@ -1,7 +1,7 @@
 {
   "crons": [
     { "path": "/api/cron/events", "schedule": "0 * * * *" },          // hourly at minute 0
-    { "path": "/api/cron/route.ts", "schedule": "5 * * * *" },    // hourly at minute 5 (after events)
+    { "path": "/api/cron/participants", "schedule": "5 * * * *" },    // hourly at minute 5 (after events)
     { "path": "/api/cron/odds", "schedule": "*/15 * * * *" }          // every 15 minutes
   ]
 }
