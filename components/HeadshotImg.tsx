@@ -2,28 +2,29 @@
 "use client";
 
 import Image from "next/image";
-import { headshotSrcFor } from "@/lib/headshots";
 
-type Props = {
+export default function HeadshotImg({
+  name,
+  className,
+  src,
+}: {
   name: string;
-  mlbamId?: string | number | null;
-  size?: number;
   className?: string;
-  title?: string;
-};
-
-export function HeadshotImg({ name, mlbamId, size = 20, className = "", title }: Props) {
-  const src = headshotSrcFor(name, mlbamId);
+  src?: string;
+}) {
+  // If you already resolved ID→file elsewhere, pass `src`.
+  // Otherwise we default to /_default.avif
+  const safeSrc = src ?? "/_default.avif";
   return (
     <Image
-      src={src}
+      src={safeSrc}
       alt={name}
-      width={size}
-      height={size}
+      width={32}
+      height={32}
       className={className}
-      title={title ?? name}
+      onError={(e) => {
+        (e.currentTarget as HTMLImageElement).src = "/_default.avif";
+      }}
     />
   );
 }
-
-export default HeadshotImg;
