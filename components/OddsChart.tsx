@@ -36,11 +36,9 @@ const AMERICAN = (n: number) => (n > 0 ? `+${n}` : `${n}`);
 const toTs = (iso: string) => new Date(iso).getTime();
 
 function matchesOutcome(marketKey: MarketKey, outcome: OutcomeKey, american: number) {
-  // batter_home_runs: Over => positive odds; Under => negative
   if (marketKey === "batter_home_runs") {
     return outcome === "over" ? american >= 0 : outcome === "under" ? american < 0 : true;
   }
-  // first_home_run: Yes => positive; No => negative
   return outcome === "yes" ? american >= 0 : outcome === "no" ? american < 0 : true;
 }
 function passBounds(marketKey: MarketKey, outcome: OutcomeKey, american: number) {
@@ -65,10 +63,7 @@ function ymdET(iso: string) {
   const day = parts.find((p) => p.type === "day")?.value!;
   return `${y}-${m}-${day}`;
 }
-// rough ET-day start/end (works for current DST; good enough for today-only filter)
 function etDayBounds(ymd: string): { start: string; end: string } {
-  // e.g. "2025-09-20"
-  // EDT is -04:00 in September; if you need full DST-handling later, we can add a tiny tz helper.
   const start = `${ymd}T00:00:00-04:00`;
   const end = `${ymd}T23:59:59-04:00`;
   return { start: new Date(start).toISOString(), end: new Date(end).toISOString() };
@@ -89,16 +84,25 @@ export function OddsChart({
   outcome: OutcomeKey;
   refreshTick: number;
 }) {
+  const [supabase, setSupabase] = useState<ReturnType<typeof createClient> | null>(null);
   const [loading, setLoading] = useState(false);
   const [rows, setRows] = useState<Row[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  // Supabase browser client
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const supabaseAnon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-  const supabase = useMemo(() => createClient(supabaseUrl, supabaseAnon), [supabaseUrl, supabaseAnon]);
+  // Create Supabase client ONLY in the browser
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    if (!url || !key) {
+      setError("Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY");
+      return;
+    }
+    setSupabase(createClient(url, key));
+  }, []);
 
   useEffect(() => {
+    if (!supabase) return; // wait until client exists (browser)
     let alive = true;
     (async () => {
       setLoading(true);
@@ -112,22 +116,18 @@ export function OddsChart({
           return;
         }
 
-        const base = supabase
+        let q = supabase
           .from("odds_history")
           .select("player_id,bookmaker,american_odds,captured_at,game_id,market_key")
           .in("player_id", ids)
           .in("bookmaker", ["fanduel", "betmgm"])
           .eq("market_key", marketKey);
 
-        let q = base;
-
         if (gameIds.length > 0) {
-          // Prefer exact game_id match; in case some rows missed game_id, also allow captured_at falling on those games' ET date(s)
           const dates = Array.from(new Set(gameIds.map((g) => gameDates[g]).filter(Boolean)));
           if (dates.length === 0) {
             q = q.in("game_id", gameIds);
           } else {
-            // Build an OR across game_id IN (…) OR date windows
             const ors: string[] = [];
             ors.push(`game_id.in.(${gameIds.join(",")})`);
             for (const d of dates) {
@@ -137,13 +137,11 @@ export function OddsChart({
             q = q.or(ors.join(","));
           }
         } else {
-          // No games selected => show only TODAY in ET
           const today = ymdET(new Date().toISOString());
           const { start, end } = etDayBounds(today);
           q = q.gte("captured_at", start).lte("captured_at", end);
         }
 
-        // Pull it
         const { data, error: e } = await q.order("captured_at", { ascending: true }).limit(5000);
         if (e) throw e;
 
@@ -169,9 +167,8 @@ export function OddsChart({
     return () => {
       alive = false;
     };
-  }, [supabase, JSON.stringify(players), JSON.stringify(gameIds), JSON.stringify(gameDates), marketKey, refreshTick]);
+  }, [supabase, JSON.stringify(players), JSON.stringify(gameIds), JSON.stringify(gameDates), marketKey, outcome, refreshTick]);
 
-  // Fold into Recharts shape
   const data = useMemo(() => {
     if (rows.length === 0) return [];
 
@@ -217,6 +214,10 @@ export function OddsChart({
   }, [players]);
 
   const hasData = data.length > 0 && series.some((s) => data.some((r) => s.key in r));
+
+  if (!supabase && typeof window !== "undefined") {
+    return <div className="text-xs text-red-600">Missing public Supabase env config.</div>;
+  }
 
   return (
     <div className="w-full" style={{ height: 420 }}>
