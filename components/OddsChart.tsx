@@ -10,7 +10,7 @@ type OutcomeKey = "over" | "under" | "yes" | "no";
 type PlayerLike = { player_id?: string; id?: string; full_name?: string };
 
 type Snapshot = {
-  captured_at: string;
+  captured_at: string;          // ISO
   american_odds: number;
   bookmaker: "fanduel" | "betmgm";
 };
@@ -24,7 +24,7 @@ const normBook = (b: string): "fanduel" | "betmgm" | null => {
   return null;
 };
 
-// UI-only outcome split by sign
+// Outcome split by sign (UI-only)
 function matchesOutcome(market: MarketKey, outcome: OutcomeKey, american: number) {
   if (market === "batter_home_runs") {
     return outcome === "over" ? american >= 0 : outcome === "under" ? american < 0 : true;
@@ -43,7 +43,7 @@ function passBounds(market: MarketKey, outcome: OutcomeKey, american: number) {
 
 const getPlayerId = (p: PlayerLike) => (p.player_id ?? p.id ?? "").toString();
 
-// Convert ISO ts to a YYYY-MM-DD **in ET**
+// Convert ISO timestamp to "YYYY-MM-DD" in America/New_York
 function ymdET(iso: string): string {
   const d = new Date(iso);
   const parts = new Intl.DateTimeFormat("en-US", {
@@ -58,7 +58,7 @@ function ymdET(iso: string): string {
   return `${y}-${m}-${day}`;
 }
 
-// Market alias sets (some rows may use slight variants)
+// Market aliases that your rows might use
 const MARKET_ALIASES: Record<MarketKey, string[]> = {
   batter_home_runs: ["batter_home_runs", "batter_home_run", "player_home_run"],
   batter_first_home_run: ["batter_first_home_run", "first_home_run"],
@@ -82,29 +82,21 @@ async function fetchOdds(playerId: string, marketKey: string) {
   return out;
 }
 
-async function fetchTodayOnly(
+async function fetchRowsForPlayer(
   playerId: string,
-  marketKey: MarketKey,
-  targetDatesET: Set<string> | null // if null → no games selected, return full history
+  marketKey: MarketKey
 ): Promise<Snapshot[]> {
   const aliases = MARKET_ALIASES[marketKey];
-  let rows: Snapshot[] = [];
   for (const mk of aliases) {
-    rows = await fetchOdds(playerId, mk);
-    if (rows.length) break;
+    const rows = await fetchOdds(playerId, mk);
+    if (rows.length) return rows;
   }
-  if (!rows.length) return [];
-
-  // If games are selected, keep ONLY rows whose captured_at's ET date matches any selected game's ET date
-  if (targetDatesET && targetDatesET.size > 0) {
-    rows = rows.filter((r) => targetDatesET.has(ymdET(r.captured_at)));
-  }
-  return rows;
+  return [];
 }
 
 export function OddsChart({
   gameIds,
-  gameDates, // game_id -> 'YYYY-MM-DD' in ET (from commence_time)
+  gameDates, // game_id -> 'YYYY-MM-DD' in ET (built from commence_time)
   players,
   marketKey,
   outcome,
@@ -128,24 +120,31 @@ export function OddsChart({
         return;
       }
 
-      // Build the set of selected game ET dates
-      let targetDates: Set<string> | null = null;
+      // Build ET target date set from the selected games
+      let targetDatesET: Set<string> | null = null;
       if (gameIds.length > 0 && gameDates) {
-        targetDates = new Set<string>();
+        targetDatesET = new Set<string>();
         for (const gid of gameIds) {
           const d = gameDates[gid];
-          if (d) targetDates.add(d);
+          if (d) targetDatesET.add(d);
         }
       }
 
       const acc: Record<string, Snapshot[]> = {};
 
-      // For each selected player, fetch history then filter to targetDates (if any)
       for (const p of players) {
         const pid = getPlayerId(p);
         if (!pid) continue;
 
-        const rows = await fetchTodayOnly(pid, marketKey, targetDates);
+        // 1) fetch full (unscoped) history for the player's chosen market (via aliases)
+        let rows = await fetchRowsForPlayer(pid, marketKey);
+
+        // 2) If any games selected, keep only snapshots whose captured_at ET date matches a selected game ET date
+        if (targetDatesET && targetDatesET.size > 0) {
+          rows = rows.filter((r) => targetDatesET!.has(ymdET(r.captured_at)));
+        }
+
+        // 3) Filter for outcome/sign and your bounds; only FD/MGM remain by fetch-normalization
         for (const r of rows) {
           if (!matchesOutcome(marketKey, outcome, r.american_odds)) continue;
           if (!passBounds(marketKey, outcome, r.american_odds)) continue;
@@ -154,6 +153,7 @@ export function OddsChart({
         }
       }
 
+      // Order by time ascending
       Object.values(acc).forEach((arr) =>
         arr.sort((a, b) => new Date(a.captured_at).getTime() - new Date(b.captured_at).getTime())
       );
