@@ -71,40 +71,37 @@ export default function DashboardPage() {
   const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
 
-  // Robust games fetch: accept array OR {games} OR {ok,data}
+  // Robust games fetch: accept array OR {games} OR {ok,games}
   useEffect(() => {
     let alive = true;
     (async () => {
       setGamesError(null);
       try {
-        // You currently get the shape from /api/players. Keep this URL if that’s what you’re using.
-        const res = await fetch("/api/players?with_participants=1", { cache: "no-store" });
+        const res = await fetch("/api/games?with_participants=1", { cache: "no-store" });
         const txt = await res.text();
         let payload: any;
         try {
           payload = JSON.parse(txt);
         } catch {
-          throw new Error(`Non-JSON from /api/players: ${txt.slice(0, 200)}`);
+          throw new Error(`Non-JSON from /api/games: ${txt.slice(0, 200)}`);
         }
 
         let list: any[] | null = null;
         if (Array.isArray(payload)) list = payload;
         else if (payload && Array.isArray(payload.games)) list = payload.games;
-        else if (payload && Array.isArray(payload.data)) list = payload.data; // <-- your sample
-        else if (payload && payload.ok && Array.isArray(payload.data)) list = payload.data;
+        else if (payload && payload.ok && Array.isArray(payload.games)) list = payload.games;
 
         if (!list) throw new Error("No games array in response");
         if (!alive) return;
 
-        // Normalize shape
+        // Normalize
         const norm: Game[] = list
           .filter((g) => g && (g.game_id || g.id) && g.commence_time)
           .map((g) => {
             const game_id = String(g.game_id ?? g.id);
-            const home_abbr = (g.home_team_abbr ?? g.home_abbr ?? g.home ?? "").toString();
-            const away_abbr = (g.away_team_abbr ?? g.away_abbr ?? g.away ?? "").toString();
+            const home_abbr = (g.home_team_abbr ?? g.home_abbr ?? g.home_team ?? g.home ?? "").toString().toLowerCase();
+            const away_abbr = (g.away_team_abbr ?? g.away_abbr ?? g.away_team ?? g.away ?? "").toString().toLowerCase();
 
-            // participants may have {players:{full_name}}
             let parts: Participant[] | undefined = undefined;
             if (Array.isArray(g.participants)) {
               parts = g.participants.map((p: any) => ({
@@ -151,7 +148,7 @@ export default function DashboardPage() {
     return `${countGames} game${countGames === 1 ? "" : "s"} · ${countPlayers} player${countPlayers === 1 ? "" : "s"}`;
   }, [selectedPlayers, selectedGameIds]);
 
-  // ET date map for games (defensive)
+  // ET date map for games
   const gameDates: Record<string, string> = useMemo(() => {
     const map: Record<string, string> = {};
     for (const g of games) {
