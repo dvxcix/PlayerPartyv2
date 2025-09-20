@@ -10,15 +10,20 @@ import { OddsChart } from "@/components/OddsChart";
 type MarketKey = "batter_home_runs" | "batter_first_home_run";
 type OutcomeKey = "over" | "under" | "yes" | "no";
 
-const MARKETS: {
-  key: MarketKey;
-  label: string;
-  outcomes: OutcomeKey[];
-  defaultOutcome: OutcomeKey;
-}[] = [
+const MARKETS: { key: MarketKey; label: string; outcomes: OutcomeKey[]; defaultOutcome: OutcomeKey }[] = [
   { key: "batter_home_runs", label: "Batter Home Runs (0.5)", outcomes: ["over", "under"], defaultOutcome: "over" },
   { key: "batter_first_home_run", label: "Batter First Home Run", outcomes: ["yes", "no"], defaultOutcome: "yes" },
 ];
+
+function isTodayISO(iso?: string | null) {
+  if (!iso) return false;
+  const d = new Date(iso);
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const dd = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const tn = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  return dd === tn;
+}
 
 export default function DashboardPage() {
   const [games, setGames] = useState<any[]>([]);
@@ -29,11 +34,9 @@ export default function DashboardPage() {
   const [market, setMarket] = useState<MarketKey>("batter_home_runs");
   const [outcome, setOutcome] = useState<OutcomeKey>("over");
 
-  // Panels
   const [showGames, setShowGames] = useState(true);
   const [showPlayers, setShowPlayers] = useState(true);
 
-  // Refresh
   const [refreshing, setRefreshing] = useState(false);
   const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
@@ -45,9 +48,10 @@ export default function DashboardPage() {
         const res = await fetch("/api/games", { cache: "no-store" });
         const json = await res.json();
         if (json?.ok) {
-          // Some versions returned { ok, data }, older returned { ok, games }
-          const list = json.data ?? json.games ?? [];
-          setGames(Array.isArray(list) ? list : []);
+          const list = (json.data ?? json.games ?? []) as any[];
+          // Filter to *today’s* games (prevents lingering 09/19 in the list)
+          const todayOnly = list.filter((g) => isTodayISO(g.commence_time));
+          setGames(todayOnly);
         } else {
           setGames([]);
           setGamesError(json?.error ?? "Failed to load games.");
@@ -148,7 +152,6 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* micro toast under header */}
         {refreshMsg && (
           <div className="bg-white/80 backdrop-blur border-t">
             <div className="max-w-7xl mx-auto px-4 py-2 text-xs text-gray-700">{refreshMsg}</div>
@@ -158,14 +161,13 @@ export default function DashboardPage() {
 
       {/* Content */}
       <div className="max-w-7xl mx-auto px-4 py-6 space-y-6">
-        {/* Collapsible Controls */}
         <div className="grid gap-4 lg:grid-cols-2">
           {/* Games */}
           <div className="rounded-2xl border bg-white shadow-sm">
             <div className="p-3 border-b flex items-center justify-between">
               <div>
                 <div className="font-medium">Games</div>
-                <div className="text-xs text-gray-500">Pick any games; compare players across them.</div>
+                <div className="text-xs text-gray-500">Multi-select games to filter the players list.</div>
               </div>
               <button
                 className="text-xs px-2 py-1 border rounded-md bg-white hover:bg-gray-50"
@@ -176,7 +178,6 @@ export default function DashboardPage() {
             </div>
             {showGames && (
               <div className="p-3">
-                {/* Inline error if games failed */}
                 {gamesError ? (
                   <div className="text-xs text-red-600">Failed to load games: {gamesError}</div>
                 ) : (
@@ -191,7 +192,9 @@ export default function DashboardPage() {
             <div className="p-3 border-b flex items-center justify-between">
               <div>
                 <div className="font-medium">Players</div>
-                <div className="text-xs text-gray-500">Search, select all, or pick specific players.</div>
+                <div className="text-xs text-gray-500">
+                  Select players from selected games (or all players if no game is selected).
+                </div>
               </div>
               <button
                 className="text-xs px-2 py-1 border rounded-md bg-white hover:bg-gray-50"
@@ -217,8 +220,7 @@ export default function DashboardPage() {
         <div className="rounded-2xl border bg-white shadow-sm">
           <div className="p-3 border-b">
             <div className="font-medium">
-              Price History — {market === "batter_home_runs" ? "Over/Under 0.5 HR" : "First HR Yes/No"} —{" "}
-              {outcome.toUpperCase()}
+              Price History — {market === "batter_home_runs" ? "Over/Under 0.5 HR" : "First HR Yes/No"} — {outcome.toUpperCase()}
             </div>
             <div className="text-xs text-gray-500">Hover a line or dot for details. Zoom, pan, brush. Export CSV.</div>
           </div>
