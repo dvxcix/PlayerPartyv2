@@ -7,15 +7,15 @@ const SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE!;
 
 function todayET(): string {
   const now = new Date();
-  const fmt = new Intl.DateTimeFormat("en-US", {
+  const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/New_York",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
   }).formatToParts(now);
-  const y = fmt.find((p) => p.type === "year")!.value;
-  const m = fmt.find((p) => p.type === "month")!.value;
-  const d = fmt.find((p) => p.type === "day")!.value;
+  const y = parts.find((p) => p.type === "year")!.value;
+  const m = parts.find((p) => p.type === "month")!.value;
+  const d = parts.find((p) => p.type === "day")!.value;
   return `${y}-${m}-${d}`;
 }
 
@@ -47,7 +47,7 @@ export async function GET(req: Request) {
     const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { persistSession: false } });
     const today = todayET();
 
-    // IMPORTANT: repeat the CTE for each statement
+    // Repeat CTE per statement; delete rows with ET date < today
     const sql = `
       with params as (select to_date($1, 'YYYY-MM-DD')::date as today)
       delete from odds_history
@@ -55,7 +55,7 @@ export async function GET(req: Request) {
 
       with params as (select to_date($1, 'YYYY-MM-DD')::date as today)
       delete from odds
-      where (timezone('America/New_York', created_at))::date < (select today from params);
+      where (timezone('America/New_York', captured_at))::date < (select today from params);
 
       with params as (select to_date($1, 'YYYY-MM-DD')::date as today)
       delete from game_participants
@@ -70,7 +70,7 @@ export async function GET(req: Request) {
       where (timezone('America/New_York', games.commence_time))::date < (select today from params);
     `;
 
-    // Requires one-time DB helper:
+    // Requires one-time function in DB:
     // create or replace function exec_sql(sql_text text, params text[] default null)
     // returns void language plpgsql as $$
     // declare _p1 text; begin
