@@ -1,8 +1,10 @@
 // app/dashboard/page.tsx
 "use client";
 
+// app/dashboard/page.tsx
 export const dynamic = "force-dynamic";
-export const revalidate = 0;
+export const revalidate = false; // <- MUST be a number or false
+
 
 import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
