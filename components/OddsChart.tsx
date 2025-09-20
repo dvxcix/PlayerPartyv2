@@ -16,13 +16,12 @@ import { BOOK_COLORS } from "@/lib/odds";
 
 type MarketKey = "batter_home_runs" | "batter_first_home_run";
 type OutcomeKey = "over" | "under" | "yes" | "no";
-
 type PlayerLike = { player_id?: string; id?: string; full_name?: string };
 
 type Snapshot = {
-  captured_at: string;
+  captured_at: string;                 // ISO
   american_odds: number;
-  bookmaker: "fanduel" | "betmgm";
+  bookmaker: "fanduel" | "betmgm";     // guaranteed non-null
 };
 
 const AMERICAN = (n: number) => (n > 0 ? `+${n}` : `${n}`);
@@ -56,22 +55,37 @@ function getPlayerId(p: PlayerLike) {
   return (p.player_id ?? p.id ?? "").toString();
 }
 
-async function fetchHistory(playerId: string, gameId: string | undefined, marketKey: MarketKey) {
+async function fetchHistory(
+  playerId: string,
+  gameId: string | undefined,
+  marketKey: MarketKey
+): Promise<Snapshot[]> {
   const params = new URLSearchParams({ market_key: marketKey });
   if (gameId) params.set("game_id", gameId);
+
   const res = await fetch(`/api/players/${encodeURIComponent(playerId)}/odds?` + params.toString(), {
     cache: "no-store",
   });
   const json = await res.json();
   if (!json?.ok) return [];
-  const arr = Array.isArray(json.data) ? json.data : Array.isArray(json) ? json : [];
-  return (arr as any[])
-    .map((r) => ({
-      captured_at: r.captured_at,
-      american_odds: Number(r.american_odds),
-      bookmaker: normBook(String(r.bookmaker)),
-    }))
-    .filter((r) => r.bookmaker && Number.isFinite(r.american_odds));
+
+  const raw = Array.isArray(json.data) ? json.data : Array.isArray(json) ? json : [];
+  const out: Snapshot[] = [];
+
+  for (const r of raw as any[]) {
+    const book = normBook(String(r.bookmaker ?? ""));
+    const ao = Number(r.american_odds);
+    const ts = Date.parse(String(r.captured_at));
+    if (!book) continue;
+    if (!Number.isFinite(ao) || !Number.isFinite(ts)) continue;
+
+    out.push({
+      captured_at: new Date(ts).toISOString(),
+      american_odds: ao,
+      bookmaker: book,
+    });
+  }
+  return out;
 }
 
 export function OddsChart({
@@ -93,13 +107,13 @@ export function OddsChart({
     let cancelled = false;
 
     (async () => {
-      const pairs: Array<{ player_id: string; game_id?: string }> = [];
       if (players.length === 0) {
         setSeries({});
         return;
       }
 
-      // Build (player, game) pairs — if no games selected, query only per player
+      // Build (player, game) pairs — if no games selected, query per player only
+      const pairs: Array<{ player_id: string; game_id?: string }> = [];
       if (gameIds.length > 0) {
         for (const gid of gameIds) {
           for (const p of players) {
@@ -118,6 +132,7 @@ export function OddsChart({
       for (const item of pairs) {
         const rows = await fetchHistory(item.player_id, item.game_id, marketKey);
         for (const r of rows) {
+          // r is already a valid Snapshot (bookmaker guaranteed)
           if (!matchesOutcome(marketKey, outcome, r.american_odds)) continue;
           if (!passBounds(marketKey, outcome, r.american_odds)) continue;
           const key = `${item.player_id}|${r.bookmaker}`;
@@ -138,12 +153,11 @@ export function OddsChart({
     };
   }, [JSON.stringify(gameIds), JSON.stringify(players), marketKey, outcome, refreshTick]);
 
-  // Flatten into Line components
   const lines = useMemo(() => {
-    const out: { key: string; book: "fanduel" | "betmgm"; points: any[] }[] = [];
+    const out: { key: string; book: "fanduel" | "betmgm"; points: { ts: number; american: number; implied: number }[] }[] =
+      [];
     for (const [k, arr] of Object.entries(series)) {
       const book = k.split("|")[1] as "fanduel" | "betmgm";
-      if (book !== "fanduel" && book !== "betmgm") continue;
       out.push({
         key: k,
         book,
@@ -190,10 +204,9 @@ export function OddsChart({
                   minute: "2-digit",
                 })
               }
-              formatter={(val: any, _name, ctx) => {
+              formatter={(val: any) => {
                 const n = Number(val);
                 const implied = (toPct(n) * 100).toFixed(1) + "%";
-                // ctx.payload is a single point; dataKey is "american"
                 return [`${AMERICAN(n)}  (${implied})`, "Odds"];
               }}
             />
