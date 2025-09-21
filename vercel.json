@@ -1,0 +1,8 @@
+{
+  "crons": [
+    { "path": "/api/cron/events", "schedule": "0 */2 * * *" },
+    { "path": "/api/cron/odds", "schedule": "*/15 * * * *" },
+    { "path": "/api/cron/participants", "schedule": "*/15 * * * *" },
+    { "path": "/api/cron/cleanup", "schedule": "5 4 * * *" }
+  ]
+}
