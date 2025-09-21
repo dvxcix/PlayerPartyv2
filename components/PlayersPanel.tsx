@@ -11,7 +11,6 @@ export type PlayerItem = {
   game_id: string;
 };
 
-// Must match your page's PlayerPick shape
 export type PlayerPick = {
   player_id: string;
   full_name: string;
@@ -30,7 +29,7 @@ export default function PlayersPanel({ selectedGameIds, value, onChange }: Props
   const [err, setErr] = useState<string | null>(null);
   const [query, setQuery] = useState("");
 
-  // Fetch players for current selected games
+  // Fetch players for selected games
   useEffect(() => {
     let stop = false;
     async function run() {
@@ -88,7 +87,6 @@ export default function PlayersPanel({ selectedGameIds, value, onChange }: Props
   }
 
   function selectAllVisible() {
-    // Merge without duplicating (keyed by player_id+game_id)
     const merged = [...value];
     for (const p of filtered) {
       const exists = merged.some((v) => v.player_id === p.player_id && v.game_id === p.game_id);
@@ -150,7 +148,7 @@ export default function PlayersPanel({ selectedGameIds, value, onChange }: Props
                       }`}
                     >
                       <HeadshotImg
-                        name={p.full_name}
+                        fullName={p.full_name}   {/* ← changed from name= to fullName= */}
                         className="h-6 w-6 rounded-full border"
                         width={24}
                         height={24}
