@@ -3,22 +3,22 @@ import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import type { ApiGame } from "@/lib/types";
 
-function dateStringET(d: Date) {
+function etDateString(d: Date) {
   return d.toLocaleDateString("en-US", { timeZone: "America/New_York" });
 }
 
-export async function GET(req: Request) {
+export async function GET() {
   try {
-    const todayET = dateStringET(new Date());
+    const todayET = etDateString(new Date());
 
-    // Broad time window in UTC to catch all ET games around "today"
+    // Broad UTC window; we’ll filter to ET “today” in code (DST-safe)
     const now = new Date();
     const start = new Date(now.getTime() - 12 * 3600 * 1000).toISOString();
     const end = new Date(now.getTime() + 36 * 3600 * 1000).toISOString();
 
     const { data, error } = await supabaseAdmin
       .from("games")
-      .select("id, game_id, home_team_abbr, away_team_abbr, commence_time")
+      .select("game_id, commence_time, home_team, away_team")
       .gte("commence_time", start)
       .lt("commence_time", end)
       .order("commence_time", { ascending: true });
@@ -26,15 +26,15 @@ export async function GET(req: Request) {
     if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
 
     const rows = (data ?? []).filter((g) => {
-      const etDay = dateStringET(new Date(String(g.commence_time)));
+      const etDay = etDateString(new Date(String(g.commence_time)));
       return etDay === todayET;
     });
 
-    // Normalize abbrs to uppercase for logos/consistency.
     const games: ApiGame[] = rows.map((g) => ({
-      ...g,
-      home_team_abbr: String(g.home_team_abbr || "").toUpperCase(),
-      away_team_abbr: String(g.away_team_abbr || "").toUpperCase(),
+      game_id: String(g.game_id),
+      commence_time: new Date(String(g.commence_time)).toISOString(),
+      home_team: (g.home_team ?? null) && String(g.home_team).toUpperCase(),
+      away_team: (g.away_team ?? null) && String(g.away_team).toUpperCase(),
     }));
 
     return NextResponse.json({ ok: true, data: games }, { status: 200 });
