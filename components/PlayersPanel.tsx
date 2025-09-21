@@ -4,104 +4,170 @@
 import { useEffect, useMemo, useState } from "react";
 import HeadshotImg from "@/components/HeadshotImg";
 
-export type PlayerPick = {
+export type PlayerItem = {
   player_id: string;
   full_name: string;
-  game_id: string;     // tie selection to a specific game
-  team_abbr?: string | null;
-};
-
-type Props = {
-  selectedGameIds: string[];
-  value: PlayerPick[];
-  onChange: (picks: PlayerPick[]) => void;
-};
-
-type ApiPlayer = {
-  player_id: string;
-  full_name: string;
-  team_abbr?: string | null;
+  team_abbr: string | null;
   game_id: string;
 };
 
-export default function PlayersPanel({ selectedGameIds, value, onChange }: Props) {
+type Props = {
+  games: Array<{
+    id?: string;
+    game_id: string;
+    commence_time: string;
+    home_team_abbr?: string;
+    away_team_abbr?: string;
+    status?: string | null;
+  }>;
+  selectedGameIds: string[];
+  value: { player_id: string; full_name: string }[];
+  onChange: (next: { player_id: string; full_name: string }[]) => void;
+};
+
+export default function PlayersPanel({ games, selectedGameIds, value, onChange }: Props) {
+  const [players, setPlayers] = useState<PlayerItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [rows, setRows] = useState<ApiPlayer[]>([]);
-  const [q, setQ] = useState("");
+  const [query, setQuery] = useState("");
 
+  // Fetch players for current selected games
   useEffect(() => {
-    (async () => {
+    let stop = false;
+    async function run() {
+      setLoading(true);
+      setErr(null);
       try {
-        setLoading(true);
-        setErr(null);
-        const params = new URLSearchParams();
-        if (selectedGameIds.length) params.set("game_ids", selectedGameIds.join(","));
-        const res = await fetch(`/api/players?${params.toString()}`, { cache: "no-store" });
-        const json = await res.json();
-        if (!json?.ok) throw new Error(json?.error || "Players fetch failed");
-        setRows(json.players ?? []);
+        if (!selectedGameIds.length) {
+          setPlayers([]);
+          return;
+        }
+        const qs = new URLSearchParams({ game_ids: selectedGameIds.join(",") }).toString();
+        const res = await fetch(`/api/players?${qs}`, { cache: "no-store" });
+        const text = await res.text();
+        let json: any;
+        try {
+          json = JSON.parse(text);
+        } catch {
+          throw new Error(`Non-JSON from /api/players: ${text.slice(0, 80)}…`);
+        }
+        if (!json?.ok) throw new Error(json?.error || "Unknown players error");
+        if (!Array.isArray(json.data)) throw new Error("No players array in response");
+        if (!stop) setPlayers(json.data as PlayerItem[]);
       } catch (e: any) {
-        setErr(e?.message ?? String(e));
-        setRows([]);
+        if (!stop) {
+          setErr(e?.message ?? String(e));
+          setPlayers([]);
+        }
       } finally {
-        setLoading(false);
+        if (!stop) setLoading(false);
       }
-    })();
-  }, [selectedGameIds.join(",")]);
+    }
+    run();
+    return () => {
+      stop = true;
+    };
+  }, [selectedGameIds]);
 
   const filtered = useMemo(() => {
-    const s = q.trim().toLowerCase();
-    if (!s) return rows;
-    return rows.filter((r) => r.full_name.toLowerCase().includes(s));
-  }, [rows, q]);
+    const q = query.trim().toLowerCase();
+    if (!q) return players;
+    return players.filter((p) => p.full_name.toLowerCase().includes(q));
+  }, [players, query]);
 
-  function toggle(p: ApiPlayer) {
-    const exists = value.find((v) => v.player_id === p.player_id && v.game_id === p.game_id);
-    if (exists) {
-      onChange(value.filter((v) => !(v.player_id === p.player_id && v.game_id === p.game_id)));
-    } else {
-      onChange([...value, { player_id: p.player_id, full_name: p.full_name, game_id: p.game_id, team_abbr: p.team_abbr }]);
+  function toggle(p: { player_id: string; full_name: string }) {
+    const exists = value.some((v) => v.player_id === p.player_id);
+    if (exists) onChange(value.filter((v) => v.player_id !== p.player_id));
+    else onChange([...value, p]);
+  }
+
+  function selectAllVisible() {
+    const as = filtered.map((p) => ({ player_id: p.player_id, full_name: p.full_name }));
+    // Merge without duplicating
+    const merged = [...value];
+    for (const a of as) {
+      if (!merged.some((v) => v.player_id === a.player_id)) merged.push(a);
     }
+    onChange(merged);
+  }
+
+  function clearAll() {
+    onChange([]);
   }
 
   return (
-    <div className="space-y-2">
-      <input
-        value={q}
-        onChange={(e) => setQ(e.target.value)}
-        placeholder="Search players…"
-        className="w-full border rounded-md px-3 py-2 text-sm"
-      />
+    <div className="space-y-3">
+      {/* Controls */}
+      <div className="flex items-center gap-2">
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search players…"
+          className="w-full px-3 py-1.5 border rounded-md text-sm"
+        />
+        <button
+          onClick={selectAllVisible}
+          disabled={!filtered.length}
+          className="px-2 py-1 border rounded-md text-xs bg-white hover:bg-gray-50 disabled:opacity-50"
+          title="Select all visible"
+        >
+          Select all
+        </button>
+        <button
+          onClick={clearAll}
+          disabled={!value.length}
+          className="px-2 py-1 border rounded-md text-xs bg-white hover:bg-gray-50 disabled:opacity-50"
+        >
+          Clear
+        </button>
+      </div>
 
-      {loading ? (
-        <div className="text-xs text-gray-500">Loading players…</div>
-      ) : err ? (
-        <div className="text-xs text-red-600">Failed to load players: {err}</div>
-      ) : filtered.length === 0 ? (
-        <div className="text-xs text-gray-500">No players match.</div>
-      ) : (
-        <div className="max-h-80 overflow-auto divide-y">
-          {filtered.map((p) => {
-            const active = !!value.find((v) => v.player_id === p.player_id && v.game_id === p.game_id);
-            return (
-              <button
-                key={`${p.player_id}|${p.game_id}`}
-                onClick={() => toggle(p)}
-                className={`w-full flex items-center gap-3 px-2 py-2 text-left hover:bg-gray-50 ${
-                  active ? "bg-blue-50" : ""
-                }`}
-              >
-                <HeadshotImg fullName={p.full_name} className="w-8 h-8 rounded-full object-cover" />
-                <div className="flex-1">
-                  <div className="text-sm">{p.full_name}</div>
-                  <div className="text-[11px] text-gray-500">Game: {p.game_id}</div>
-                </div>
-                <div className="text-[11px] uppercase text-gray-400">{p.team_abbr ?? ""}</div>
-              </button>
-            );
-          })}
-        </div>
+      {/* Status */}
+      {loading && <div className="text-xs text-gray-500">Loading players…</div>}
+      {err && <div className="text-xs text-red-600">Failed to load players: {err}</div>}
+
+      {/* List */}
+      {!loading && !err && (
+        <>
+          {!filtered.length ? (
+            <div className="text-sm text-gray-500">No players match.</div>
+          ) : (
+            <ul className="divide-y">
+              {filtered.map((p) => {
+                const sel = value.some((v) => v.player_id === p.player_id);
+                return (
+                  <li key={`${p.game_id}|${p.player_id}`}>
+                    <button
+                      onClick={() => toggle({ player_id: p.player_id, full_name: p.full_name })}
+                      className={`w-full flex items-center gap-3 px-2 py-2 text-left ${
+                        sel ? "bg-blue-50" : "hover:bg-gray-50"
+                      }`}
+                    >
+                      <HeadshotImg
+                        name={p.full_name}
+                        className="h-6 w-6 rounded-full border"
+                        width={24}
+                        height={24}
+                      />
+                      <div className="flex-1">
+                        <div className="text-sm">{p.full_name}</div>
+                        <div className="text-[11px] text-gray-500">
+                          {(p.team_abbr ?? "").toUpperCase()} • {p.game_id}
+                        </div>
+                      </div>
+                      <div
+                        className={`ml-3 h-5 w-5 shrink-0 rounded border ${
+                          sel ? "bg-blue-500 border-blue-500" : "bg-white border-gray-300"
+                        }`}
+                        aria-hidden
+                      />
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </>
       )}
     </div>
   );
