@@ -13,7 +13,7 @@ function normalizeBook(book: string): BookKey {
 
 export default function BookBadge({ book }: { book: string }) {
   const b = normalizeBook(book);
-  const src = b === "fanduel" ? "/logos/FD.png" : "/logos/MGM.png";
+  const src = b === "fanduel" ? "public/logos/FD.png" : "public/logos/MGM.png";
   const alt = b === "fanduel" ? "FanDuel" : "BetMGM";
   return (
     <span className="inline-flex items-center gap-1 align-middle">
