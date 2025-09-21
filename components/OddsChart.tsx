@@ -7,187 +7,162 @@ import {
   Line,
   XAxis,
   YAxis,
-  CartesianGrid,
   Tooltip,
   ResponsiveContainer,
+  CartesianGrid,
   Brush,
 } from "recharts";
 import { BOOK_COLORS } from "@/lib/odds";
 
 type MarketKey = "batter_home_runs" | "batter_first_home_run";
 type OutcomeKey = "over" | "under" | "yes" | "no";
-type PlayerLike = { player_id: string; full_name: string };
 
-type HistoryRow = {
-  player_id: string;
-  full_name: string;
-  bookmaker: "fanduel" | "betmgm";
-  american_odds: number;
+type PlayerPick = { player_id: string; full_name: string; game_id: string };
+
+type Snapshot = {
   captured_at: string; // ISO
-  game_id?: string | null;
+  american_odds: number;
+  bookmaker: "fanduel" | "betmgm";
 };
 
-type ChartPoint = {
-  captured_at: string;
-  ts: number;
-  [seriesKey: string]: number | string;
-};
+type ChartRow = { captured_at: string; ts: number; [seriesKey: string]: number | string };
 
-type Props = {
-  gameIds: string[];
-  players: PlayerLike[];
-  marketKey: MarketKey;
-  outcome: OutcomeKey;
-  refreshTick: number;
-};
+function passBounds(market: MarketKey, outcome: OutcomeKey, american: number): boolean {
+  // global clamps from earlier request: hide > +2500 and < -5000
+  if (american > 2500) return false;
+  if (american < -5000) return false;
 
-const passBounds = (marketKey: MarketKey, outcome: OutcomeKey, american: number) => {
-  if (marketKey === "batter_home_runs") {
-    if (outcome === "over") return american <= 2500;
-    if (outcome === "under") return american >= -5000;
-  }
+  // For HR 0.5: OVER usually positive, UNDER usually negative (but keep both if in bounds)
+  // For First HR: YES often positive, NO negative (but keep both if in bounds)
   return true;
-};
+}
 
 export default function OddsChart({
-  gameIds,
   players,
   marketKey,
   outcome,
   refreshTick,
-}: Props) {
-  const [rows, setRows] = useState<HistoryRow[]>([]);
+}: {
+  players: PlayerPick[];
+  marketKey: MarketKey;
+  outcome: OutcomeKey;
+  refreshTick: number;
+}) {
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [rows, setRows] = useState<ChartRow[]>([]);
+  const [seriesKeys, setSeriesKeys] = useState<string[]>([]);
 
   useEffect(() => {
     (async () => {
       try {
         setLoading(true);
-        setError(null);
-        setRows([]);
+        setErr(null);
 
-        if (players.length === 0) return;
+        // Fetch each player's odds for their specific game_id
+        const seriesMap: Record<string, Snapshot[]> = {};
 
-        const player_ids = players.map((p) => encodeURIComponent(p.player_id)).join(",");
-        const params = new URLSearchParams();
-        params.set("market_key", marketKey);
-        params.set("player_ids", player_ids);
-        if (gameIds.length > 0) params.set("game_ids", gameIds.join(","));
+        for (const p of players) {
+          const u = new URL(`/api/players/${encodeURIComponent(p.player_id)}/odds`, window.location.origin);
+          u.searchParams.set("market_key", marketKey);
+          u.searchParams.set("game_id", p.game_id);
 
-        const res = await fetch(`/api/odds/history?${params.toString()}`, { cache: "no-store" });
-        const json = await res.json().catch(() => null);
+          const res = await fetch(u.toString(), { cache: "no-store" });
+          const json = await res.json();
+          if (!json?.ok) throw new Error(json?.error || "player odds fetch failed");
 
-        if (!json || json.ok !== true || !Array.isArray(json.data)) {
-          throw new Error(`Non-JSON / malformed response from /api/odds/history`);
+          const arr: Snapshot[] = (json.data ?? []).filter((r: Snapshot) =>
+            passBounds(marketKey, outcome, r.american_odds)
+          );
+
+          // Make two series keys: one per book
+          const fdKey = `${p.full_name} | FanDuel`;
+          const mgmKey = `${p.full_name} | BetMGM`;
+          seriesMap[fdKey] = arr.filter((r) => r.bookmaker === "fanduel");
+          seriesMap[mgmKey] = arr.filter((r) => r.bookmaker === "betmgm");
         }
 
-        const clean = (json.data as HistoryRow[])
-          .filter(
-            (r) =>
-              r &&
-              r.player_id &&
-              r.bookmaker &&
-              typeof r.american_odds === "number" &&
-              r.captured_at &&
-              passBounds(marketKey, outcome, r.american_odds)
-          )
-          .filter((r) => (gameIds.length ? gameIds.includes(String(r.game_id ?? "")) : true))
-          .sort((a, b) => Date.parse(a.captured_at) - Date.parse(b.captured_at));
+        // Merge all snapshots by timestamp
+        const byTs: Map<number, ChartRow> = new Map();
+        Object.entries(seriesMap).forEach(([key, snaps]) => {
+          snaps.forEach((s) => {
+            const ts = Date.parse(s.captured_at);
+            if (!Number.isFinite(ts)) return;
+            const iso = new Date(ts).toISOString();
+            if (!byTs.has(ts)) byTs.set(ts, { captured_at: iso, ts });
+            (byTs.get(ts) as ChartRow)[key] = s.american_odds;
+          });
+        });
 
-        setRows(clean);
+        const mergedRows = Array.from(byTs.values()).sort((a, b) => a.ts - b.ts);
+        const keys = Object.keys(seriesMap);
+
+        setRows(mergedRows);
+        setSeriesKeys(keys);
       } catch (e: any) {
-        setError(e?.message ?? String(e));
+        setErr(e?.message ?? String(e));
+        setRows([]);
+        setSeriesKeys([]);
       } finally {
         setLoading(false);
       }
     })();
-  }, [gameIds.join(","), players.map((p) => p.player_id).join(","), marketKey, outcome, refreshTick]);
+  }, [players.map((p) => `${p.player_id}|${p.game_id}`).join(","), marketKey, outcome, refreshTick]);
 
-  const chartData = useMemo<{ rows: ChartPoint[]; seriesKeys: string[] }>(() => {
-    if (!rows.length) return { rows: [], seriesKeys: [] };
-
-    const buckets = new Map<string, HistoryRow[]>();
-    rows.forEach((r) => {
-      const key = `${r.player_id}|${r.bookmaker}`;
-      const arr = buckets.get(key) || [];
-      arr.push(r);
-      buckets.set(key, arr);
-    });
-
-    const timestamps = Array.from(
-      new Set(rows.map((r) => Date.parse(r.captured_at)).filter((n) => Number.isFinite(n)))
-    )
-      .sort((a, b) => a - b)
-      .slice(-2000);
-
-    const seriesKeys = Array.from(buckets.keys());
-    const table: ChartPoint[] = timestamps.map((ts) => {
-      const iso = new Date(ts).toISOString();
-      const row: ChartPoint = { captured_at: iso, ts };
-      seriesKeys.forEach((k) => {
-        const arr = buckets.get(k)!;
-        let last = undefined as number | undefined;
-        for (let i = 0; i < arr.length; i++) {
-          const t = Date.parse(arr[i].captured_at);
-          if (t <= ts) last = arr[i].american_odds;
-          else break;
-        }
-        if (typeof last === "number") row[k] = last;
-      });
-      return row;
-    });
-
-    return { rows: table, seriesKeys };
-  }, [rows]);
-
-  if (loading) return <div className="text-sm text-gray-600">Loading odds…</div>;
-  if (error) return <div className="text-sm text-red-600">Error: {error}</div>;
-  if (!chartData.seriesKeys.length) return <div className="text-sm text-gray-600">No snapshots for this selection yet.</div>;
+  const hasData = rows.length > 0 && seriesKeys.length > 0;
 
   return (
-    <div className="w-full h-[420px]">
-      <ResponsiveContainer>
-        <LineChart data={chartData.rows} margin={{ top: 10, right: 12, bottom: 12, left: 0 }}>
-          <CartesianGrid strokeDasharray="3 3" />
-          <XAxis
-            dataKey="captured_at"
-            tickFormatter={(v: string) => new Date(v).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-            minTickGap={30}
-          />
-          <YAxis
-            domain={["auto", "auto"]}
-            tickFormatter={(v: number) => (v > 0 ? `+${v}` : `${v}`)}
-            width={48}
-          />
-          <Tooltip
-            formatter={(value: any, key: string) => {
-              const [player_id, book] = key.split("|");
-              const label = `${book.toUpperCase()} ${value > 0 ? `+${value}` : value}`;
-              return [label, player_id];
-            }}
-            labelFormatter={(v: string) =>
-              new Date(v).toLocaleString([], { hour: "2-digit", minute: "2-digit" })
-            }
-          />
-          {chartData.seriesKeys.map((k) => {
-            const book = k.split("|")[1] || "";
-            const stroke = BOOK_COLORS[book] || "#333";
-            return (
-              <Line
-                key={k}
-                type="monotone"
-                dataKey={k}
-                dot={false}
-                stroke={stroke}
-                strokeWidth={2}
-                isAnimationActive={false}
+    <div className="space-y-2">
+      {loading && <div className="text-xs text-gray-500">Loading odds…</div>}
+      {err && <div className="text-xs text-red-600">Error: {err}</div>}
+      {!loading && !err && !hasData && (
+        <div className="text-xs text-gray-500">No snapshots for this selection yet.</div>
+      )}
+
+      {hasData && (
+        <div className="w-full h-[420px]">
+          <ResponsiveContainer>
+            <LineChart data={rows} margin={{ top: 10, right: 12, bottom: 12, left: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis
+                dataKey="captured_at"
+                tickFormatter={(v) => new Date(v).toLocaleTimeString()}
+                minTickGap={28}
               />
-            );
-          })}
-          <Brush dataKey="captured_at" height={24} travellerWidth={8} />
-        </LineChart>
-      </ResponsiveContainer>
+              <YAxis
+                domain={["auto", "auto"]}
+                tickFormatter={(n) => (n > 0 ? `+${n}` : `${n}`)}
+              />
+              <Tooltip
+                formatter={(v: any) => (typeof v === "number" ? (v > 0 ? `+${v}` : `${v}`) : v)}
+                labelFormatter={(l: any) =>
+                  new Date(l).toLocaleString(undefined, {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    month: "2-digit",
+                    day: "2-digit",
+                  })
+                }
+              />
+              {seriesKeys.map((k) => {
+                const isFD = /FanDuel$/i.test(k);
+                return (
+                  <Line
+                    key={k}
+                    type="monotone"
+                    dataKey={k}
+                    stroke={isFD ? BOOK_COLORS.fanduel : BOOK_COLORS.betmgm}
+                    dot={false}
+                    strokeWidth={2}
+                    isAnimationActive={false}
+                  />
+                );
+              })}
+              <Brush dataKey="captured_at" height={28} travellerWidth={10} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      )}
     </div>
   );
 }
