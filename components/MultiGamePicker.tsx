@@ -2,7 +2,6 @@
 "use client";
 
 import type { ApiGame } from "@/lib/types";
-import { useMemo } from "react";
 import Image from "next/image";
 
 export type Game = ApiGame;
@@ -13,13 +12,13 @@ type Props = {
   onChange(next: string[]): void;
 };
 
-function logoSrc(abbr: string) {
+function logoSrc(abbr: string | null | undefined) {
   const up = (abbr || "").toUpperCase();
   return `/logos/${up}.png`;
 }
 
 export default function MultiGamePicker({ games, value, onChange }: Props) {
-  const selected = useMemo(() => new Set(value), [value]);
+  const selected = new Set(value);
 
   return (
     <div className="border rounded-xl bg-white">
@@ -42,11 +41,23 @@ export default function MultiGamePicker({ games, value, onChange }: Props) {
                 onChange(Array.from(copy));
               }}
             >
-              <Image src={logoSrc(g.away_team_abbr)} alt={g.away_team_abbr} width={20} height={20} className="rounded-full border" />
-              <span className="uppercase text-sm">{g.away_team_abbr}</span>
+              <Image
+                src={logoSrc(g.away_team)}
+                alt={g.away_team ?? ""}
+                width={20}
+                height={20}
+                className="rounded-full border"
+              />
+              <span className="uppercase text-sm">{g.away_team ?? "??"}</span>
               <span className="text-xs text-gray-400">@</span>
-              <Image src={logoSrc(g.home_team_abbr)} alt={g.home_team_abbr} width={20} height={20} className="rounded-full border" />
-              <span className="uppercase text-sm">{g.home_team_abbr}</span>
+              <Image
+                src={logoSrc(g.home_team)}
+                alt={g.home_team ?? ""}
+                width={20}
+                height={20}
+                className="rounded-full border"
+              />
+              <span className="uppercase text-sm">{g.home_team ?? "??"}</span>
               <span className="ml-auto text-xs text-gray-500">{timeLabel}</span>
             </button>
           );
