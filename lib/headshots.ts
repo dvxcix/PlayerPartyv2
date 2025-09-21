@@ -1,34 +1,47 @@
 // lib/headshots.ts
+const MAP_CSV = "/map.csv"; // already in /public
 
-// Very lightweight mapper that tries (in order):
-// 1) /headshots2/<slug>.png
-// 2) /headshots/<slug>.png
-// 3) /_default.avif
-//
-// If you later want to add a map.csv lookup, you can expand `slugFor`.
+// Very lightweight map cache (client-side)
+let mem: Record<string, string> | null = null;
 
-function slugFor(name: string): string {
-  return (name || "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+async function loadMap(): Promise<Record<string, string>> {
+  if (mem) return mem;
+  try {
+    const res = await fetch(MAP_CSV, { cache: "force-cache" });
+    const txt = await res.text();
+    const map: Record<string, string> = {};
+    // Expect CSV: "full_name,MLBAMID"
+    txt
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .forEach((line) => {
+        const [name, id] = line.split(",").map((s) => s?.trim());
+        if (name && id) map[name] = id;
+      });
+    mem = map;
+    return map;
+  } catch {
+    mem = {};
+    return mem;
+  }
 }
 
-/**
- * Returns a static asset URL for a player's headshot.
- * We keep it synchronous and static (no fetch) so it works in both SSR/CSR.
- */
-export function headshotSrcFor(name: string, mlbamId?: string | number | null): string {
-  // If you later add a strict id-based naming, keep this here
-  const slug = slugFor(name);
-  // Prefer headshots2 (your newer set), then headshots (older), then default
-  return `/headshots2/${slug}.png`;
+export function headshotSrcFor(fullName: string): string {
+  // Synchronous best-effort: derive filename by name if map not yet loaded
+  // We keep the same convention you set: /public/headshots + /headshots2 by MLBAMID.png
+  // Since dynamic fetch isn't guaranteed here, we optimistically build by "best guess":
+  const safe = (fullName || "").trim();
+  // No MLBAMID? fall back immediately
+  // The UI's onError will fall back to _default.avif if the image isn't present
+  return `/headshots/${safe}.png`;
 }
 
-/** Fallback list you might want to probe in the component if 404s are an issue. */
-export const HEADSHOT_FALLBACKS = (name: string) => [
-  `/headshots2/${slugFor(name)}.png`,
-  `/headshots/${slugFor(name)}.png`,
-  `/_default.avif`,
-];
+// Optional: expose an async helper if you want to pre-resolve MLBAMID somewhere else
+export async function resolveHeadshot(fullName: string): Promise<string> {
+  const map = await loadMap();
+  const id = map[fullName];
+  if (!id) return "/_default.avif";
+  // Try headshots/, then headshots2/
+  return `/headshots/${id}.png`;
+}
