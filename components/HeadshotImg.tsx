@@ -1,86 +1,67 @@
 // components/HeadshotImg.tsx
 "use client";
-
 import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
 
-type Props = {
-  fullName: string;
-  className?: string;
-  width?: number;
-  height?: number;
-};
-
-// lazy module-level cache
-let nameToId: Record<string, string> | null = null;
-let mapLoading: Promise<Record<string, string>> | null = null;
-
+// map.csv => columns: Name,MLBAMID (header case-insensitive OK)
 async function loadMap(): Promise<Record<string, string>> {
-  if (nameToId) return nameToId;
-  if (!mapLoading) {
-    mapLoading = fetch("/map.csv", { cache: "reload" })
-      .then(async (r) => {
-        const text = await r.text();
-        const lines = text.split(/\r?\n/).filter((l) => l.trim().length);
-        const out: Record<string, string> = {};
-        for (let i = 1; i < lines.length; i++) {
-          const line = lines[i];
-          const [name, id] = line.split(",");
-          if (name && id) out[name.trim().toLowerCase()] = id.trim();
-        }
-        nameToId = out;
-        return out;
-      })
-      .catch(() => (nameToId = {} as any));
+  const res = await fetch("/map.csv", { cache: "force-cache" });
+  const text = await res.text();
+  const lines = text.trim().split(/\r?\n/);
+  const header = lines.shift() || "";
+  const idxName = header.split(",").findIndex(h => h.trim().toLowerCase() === "name");
+  const idxId = header.split(",").findIndex(h => h.trim().toLowerCase() === "mlbamid");
+  const map: Record<string, string> = {};
+  for (const line of lines) {
+    const parts = line.split(",");
+    const nm = (parts[idxName] || "").trim().toLowerCase();
+    const id = (parts[idxId] || "").trim();
+    if (nm && id) map[nm] = id;
   }
-  return mapLoading;
+  return map;
 }
 
-export default function HeadshotImg({ fullName, className, width = 28, height = 28 }: Props) {
-  const [mlbamId, setMlbamId] = useState<string | null>(null);
+function normName(s: string) {
+  return s.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+}
+
+export default function HeadshotImg({
+  name,
+  size = 24,
+  className = "",
+}: { name: string; size?: number; className?: string }) {
+  const [src, setSrc] = useState<string>("/logos/_default.png");
+  const [tried, setTried] = useState<number>(0);
+  const key = useMemo(() => normName(name), [name]);
 
   useEffect(() => {
-    let on = true;
-    loadMap().then((map) => {
-      const id = map[(fullName || "").toLowerCase()] || null;
-      if (on) setMlbamId(id);
-    });
-    return () => { on = false; };
-  }, [fullName]);
+    let alive = true;
+    (async () => {
+      try {
+        const map = await loadMap();
+        const id = map[key];
+        if (alive && id) setSrc(`/headshots2/${id}.png`);
+        else if (alive) setSrc(`/logos/_default.png`);
+      } catch {
+        if (alive) setSrc(`/logos/_default.png`);
+      }
+    })();
+    return () => { alive = false; };
+  }, [key]);
 
-  const candidates = useMemo(() => {
-    const arr: string[] = [];
-    if (mlbamId) {
-      arr.push(`/headshots2/${mlbamId}.png`);
-      arr.push(`/headshots/${mlbamId}.png`);
-    }
-    // fallback: legacy slug-based files if present
-    const slug = (fullName || "")
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/(^-|-$)+/g, "");
-    arr.push(`/headshots2/${slug}.png`);
-    arr.push(`/headshots/${slug}.png`);
-    arr.push(`/logos/_default.png`);
-    return arr;
-  }, [mlbamId, fullName]);
+  function onErr(e: any) {
+    if (tried === 0) { setSrc(src.replace("/headshots2/", "/headshots/")); setTried(1); return; }
+    if (tried === 1) { setSrc("/logos/_default.png"); setTried(2); return; }
+  }
 
   return (
     <Image
-      alt={fullName}
-      src={candidates[0]}
-      onError={(e: any) => {
-        if (e?.currentTarget) {
-          const el = e.currentTarget as HTMLImageElement;
-          // rotate through candidates until one loads
-          const idx = candidates.indexOf(el.src.replace(window.location.origin, ""));
-          const next = candidates[idx + 1] ?? candidates[candidates.length - 1];
-          el.src = next;
-        }
-      }}
-      className={className}
-      width={width}
-      height={height}
+      src={src}
+      alt={name}
+      width={size}
+      height={size}
+      className={`inline-block align-middle rounded-full ${className}`}
+      onError={onErr}
     />
   );
 }
