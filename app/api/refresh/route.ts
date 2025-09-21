@@ -3,9 +3,13 @@ import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
-// If you want to lock this down, set REFRESH_TOKEN in Vercel.
-// Then call with header x-refresh-token or ?token=...
-function checkAuth(req: NextRequest) {
+/**
+ * Optional protection for THIS refresh endpoint (the button).
+ * If REFRESH_TOKEN is set in Vercel, requests must include it either as:
+ *   - header: x-refresh-token: <REFRESH_TOKEN>
+ *   - query:  /api/refresh?token=<REFRESH_TOKEN>
+ */
+function allowRefresh(req: NextRequest) {
   const secret = process.env.REFRESH_TOKEN;
   if (!secret) return true;
   const header = req.headers.get("x-refresh-token");
@@ -13,38 +17,65 @@ function checkAuth(req: NextRequest) {
   return token === secret;
 }
 
-// Adjust these if your cron endpoints use different paths.
-const JOB_PATHS = [
-  "/api/cron/events",
-  "/api/cron/participants",
-  "/api/cron/odds",
-  "/api/cron/cleanup",
+/**
+ * Your cron routes often require either the Vercel cron header
+ *   (x-vercel-cron: 1)
+ * or a custom bearer token. We'll send BOTH.
+ * Set CRON_TOKEN in Vercel (recommended) if your cron routes check Authorization.
+ */
+const CRON_HEADERS = (): HeadersInit => {
+  const h: Record<string, string> = {
+    "x-vercel-cron": "1",            // mimics scheduled runs
+    "cache-control": "no-store",
+  };
+  const token = process.env.CRON_TOKEN;
+  if (token) h["authorization"] = `Bearer ${token}`;
+  return h;
+};
+
+// Order matters if your jobs depend on one another.
+const JOBS: Array<{ path: string; prefer: "POST" | "GET" }> = [
+  { path: "/api/cron/events",        prefer: "POST" },
+  { path: "/api/cron/participants",  prefer: "POST" },
+  { path: "/api/cron/odds",          prefer: "POST" },
+  { path: "/api/cron/cleanup",       prefer: "POST" },
 ];
 
-async function runJob(origin: string, path: string) {
-  const url = new URL(path, origin).toString();
-  try {
-    // Most cron routes are GET; if yours are POST, swap method.
-    const res = await fetch(url, { method: "GET", cache: "no-store", headers: { "x-internal": "1" } });
-    const text = await res.text();
-    let body: any;
-    try { body = JSON.parse(text); } catch { body = { raw: text }; }
-    return { path, ok: res.ok, status: res.status, body };
-  } catch (e: any) {
-    return { path, ok: false, status: 0, error: String(e?.message ?? e) };
+async function runJob(origin: string, job: { path: string; prefer: "POST" | "GET" }) {
+  const url = new URL(job.path, origin).toString();
+  const headers = CRON_HEADERS();
+
+  // Try preferred method first
+  let res = await fetch(url, { method: job.prefer, headers });
+  // Fallback if route only supports the other verb
+  if (res.status === 405) {
+    res = await fetch(url, { method: job.prefer === "POST" ? "GET" : "POST", headers });
   }
+  const status = res.status;
+  let body: any;
+  try {
+    body = await res.json();
+  } catch {
+    body = { raw: await res.text() };
+  }
+  return { path: job.path, ok: res.ok, status, body };
 }
 
-export async function POST(req: NextRequest) {
-  if (!checkAuth(req)) {
+async function handler(req: NextRequest) {
+  if (!allowRefresh(req)) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
   const origin = new URL(req.url).origin;
+
   const results = [];
-  for (const p of JOB_PATHS) results.push(await runJob(origin, p));
-  const ok = results.every((r) => r.ok);
+  for (const job of JOBS) {
+    // Run sequentially to keep order deterministic
+    // (change to Promise.all if jobs are independent)
+    results.push(await runJob(origin, job));
+  }
+  const ok = results.every(r => r.ok);
   return NextResponse.json({ ok, results });
 }
 
-// Allow GET too so you can hit it from the browser if desired.
-export const GET = POST;
+export const POST = handler;
+export const GET  = handler;
