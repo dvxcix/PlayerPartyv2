@@ -4,10 +4,10 @@ import Image from "next/image";
 type BookKey = "fanduel" | "betmgm";
 
 function normalizeBook(book: string): BookKey {
-  const k = book.toLowerCase().replace(/[\s_-]/g, "");
+  const k = (book || "").toLowerCase().replace(/[\s._-]/g, "");
   if (k === "fd" || k.includes("fanduel")) return "fanduel";
-  if (k === "mgm" || k.includes("betmgm")) return "betmgm";
-  // default to FanDuel if unknown
+  if (k === "mgm" || k.includes("betmgm") || k.includes("mgmresorts")) return "betmgm";
+  // default gracefully
   return "fanduel";
 }
 
