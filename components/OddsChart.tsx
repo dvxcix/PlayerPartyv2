@@ -6,7 +6,17 @@ import type { MarketKey, OutcomeKey, PlayerPick, OddsSnapshot } from "@/lib/type
 import { LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer } from "recharts";
 import Image from "next/image";
 
-const BOOK_COLORS: Record<"fanduel" | "betmgm", string> = {
+type BookKey = "fanduel" | "betmgm";
+
+function normalizeBook(book: string): BookKey {
+  const k = (book || "").toLowerCase().replace(/[\s._-]/g, "");
+  if (k === "fd" || k.includes("fanduel")) return "fanduel";
+  if (k === "mgm" || k.includes("betmgm") || k.includes("mgmresorts")) return "betmgm";
+  // default safely
+  return "fanduel";
+}
+
+const BOOK_COLORS: Record<BookKey, string> = {
   fanduel: "#1E90FF",
   betmgm: "#8B4513",
 };
@@ -23,17 +33,27 @@ function etDateString(d: Date) {
   return d.toLocaleDateString("en-US", { timeZone: "America/New_York" });
 }
 
+type GameLogoMap = Record<string, { home: string | null; away: string | null }>;
 
-type GameLogoMap = Record<string, { home: string|null, away: string|null }>;
-
-function BookBadge({ book }: { book: "fanduel"|"betmgm" }) {
-  const src = book === "fanduel" ? "/logos/fd.png" : "/logos/mgm.png";
-  const alt = book === "fanduel" ? "FanDuel" : "BetMGM";
+// ✅ Loosen prop to string and normalize internally
+function BookBadge({ book }: { book: string }) {
+  const b = normalizeBook(book);
+  // Use your file names (you mentioned FD.png / MGM.png)
+  const src = b === "fanduel" ? "/logos/FD.png" : "/logos/MGM.png";
+  const alt = b === "fanduel" ? "FanDuel" : "BetMGM";
   return <Image src={src} alt={alt} width={18} height={18} className="inline-block align-middle mr-1" />;
 }
 
 function Head({ name }: { name: string }) {
-  return <Image src={"/logos/_default.png"} alt={name} width={20} height={20} className="inline-block align-middle rounded-full mr-1" />;
+  return (
+    <Image
+      src={"/logos/_default.png"}
+      alt={name}
+      width={20}
+      height={20}
+      className="inline-block align-middle rounded-full mr-1"
+    />
+  );
 }
 
 function CustomTip(props: any) {
@@ -45,14 +65,15 @@ function CustomTip(props: any) {
       <div className="font-semibold mb-1">{label} ET</div>
       {payload.map((p: any) => {
         const key = p.dataKey as string; // "playerId|book"
-        const [playerId, book] = key.split("|");
+        const [playerId, bookRaw] = key.split("|");
         const name = (props.playerNameMap && props.playerNameMap[playerId]) || playerId;
         return (
           <div key={key} className="flex items-center gap-2">
             <Head name={name} />
             <span className="truncate max-w-[160px]">{name}</span>
             <span className="ml-1">·</span>
-            <BookBadge book={book} />
+            {/* bookRaw can be any string; BookBadge will normalize */}
+            <BookBadge book={bookRaw} />
             <span className="tabular-nums ml-1">{p.value}</span>
           </div>
         );
@@ -68,7 +89,7 @@ export default function OddsChart({ selected, marketKey }: Props) {
 
   const todayET = useMemo(() => etDateString(new Date()), []);
   const playerNameMap = useMemo(() => {
-    const m: Record<string,string> = {};
+    const m: Record<string, string> = {};
     for (const s of selected) m[s.player_id] = s.full_name;
     return m;
   }, [selected]);
@@ -101,9 +122,10 @@ export default function OddsChart({ selected, marketKey }: Props) {
             params.set("game_id", game_id);
             params.set("date", todayET); // force “today” filter (ET) server-side
 
-            const res = await fetch(`/api/players/${encodeURIComponent(player_id)}/odds?${params.toString()}`, {
-              cache: "no-store",
-            });
+            const res = await fetch(
+              `/api/players/${encodeURIComponent(player_id)}/odds?${params.toString()}`,
+              { cache: "no-store" }
+            );
 
             if (!res.ok) {
               const text = await res.text();
@@ -112,11 +134,12 @@ export default function OddsChart({ selected, marketKey }: Props) {
             const json = (await res.json()) as { ok: boolean; data?: OddsSnapshot[]; error?: string };
             if (!json.ok) throw new Error(json.error || "odds fetch failed");
 
-            const snaps = (json.data ?? []).slice().sort((a, b) => {
-              return new Date(a.captured_at).getTime() - new Date(b.captured_at).getTime();
-            });
+            const snaps = (json.data ?? [])
+              .slice()
+              .sort((a, b) => new Date(a.captured_at).getTime() - new Date(b.captured_at).getTime());
 
             for (const s of snaps) {
+              // keep original bookmaker string in the key; we normalize only where needed
               const skey = `${player_id}|${s.bookmaker}`;
               (allSeries[skey] ||= []).push(s);
             }
@@ -140,6 +163,7 @@ export default function OddsChart({ selected, marketKey }: Props) {
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected.map((s) => `${s.player_id}|${s.game_id}`).join(","), marketKey, todayET]);
 
   // Build a merged time-axis for Recharts
@@ -151,9 +175,10 @@ export default function OddsChart({ selected, marketKey }: Props) {
     const sortedTs = Array.from(times).sort((a, b) => a - b);
 
     const rows = sortedTs.map((tms) => {
-      const row: any = { captured_at: new Date(tms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) };
+      const row: any = {
+        captured_at: new Date(tms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      };
       for (const [key, arr] of Object.entries(series)) {
-        // find point with closest timestamp (or exact)
         const exact = arr.find((r) => new Date(r.captured_at).getTime() === tms);
         row[key] = exact ? exact.american_odds : null;
       }
@@ -184,7 +209,10 @@ export default function OddsChart({ selected, marketKey }: Props) {
             <Tooltip content={<CustomTip playerNameMap={playerNameMap} />} />
             <Legend />
             {(chartData as any).seriesKeys?.map((key: string) => {
-              const book = key.split("|")[1] as "fanduel" | "betmgm";
+              // key form: playerId|bookRaw (bookRaw may be "FD", "FanDuel", "betmgm", etc.)
+              const parts = key.split("|");
+              const bookRaw = parts[1] ?? "";
+              const book = normalizeBook(bookRaw); // BookKey
               return (
                 <Line
                   key={key}
