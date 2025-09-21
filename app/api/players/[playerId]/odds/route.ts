@@ -1,97 +1,76 @@
-// app/api/players/route.ts
+// app/api/players/[playerId]/odds/route.ts
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE!;
 
-// Compute today's window in Eastern Time (00:00:00–23:59:59)
-function todayETWindow() {
-  const now = new Date();
-  // Offset New York manually to avoid deps; this is "good enough" for app usage
-  const est = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  })
-    .formatToParts(now)
-    .reduce((acc: any, p) => ((acc[p.type] = p.value), acc), {} as any);
+type AnyRow = Record<string, any>;
 
-  const y = Number(est.year);
-  const m = Number(est.month);
-  const d = Number(est.day);
-  const startET = new Date(Date.UTC(y, m - 1, d, 5, 0, 0)); // 00:00 ET == 05:00 UTC (non-DST safe enough)
-  const endET = new Date(Date.UTC(y, m - 1, d + 1, 4, 59, 59, 999)); // 23:59:59.999 ET
-
-  return { startISO: startET.toISOString(), endISO: endET.toISOString() };
+function wantedKeys(input: string | null): string[] {
+  const s = (input ?? "").toLowerCase();
+  if (s === "batter_first_home_run" || s === "first_home_run" || s === "batter_first_home_runs") {
+    return ["batter_first_home_run"];
+  }
+  return ["batter_home_run", "batter_home_runs", "player_home_run"];
 }
 
-export async function GET(req: Request) {
+function normBook(b: string): "fanduel" | "betmgm" | null {
+  const s = (b || "").toLowerCase().replace(/[\s_-]+/g, "");
+  if (s === "fanduel" || s === "fd") return "fanduel";
+  if (s === "betmgm" || s === "mgm") return "betmgm";
+  return null;
+}
+
+export async function GET(req: Request, { params }: { params: { playerId: string } }) {
   try {
     if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
       return NextResponse.json({ ok: false, error: "Supabase env not set" }, { status: 500 });
     }
+
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
 
     const url = new URL(req.url);
-    const gameIdsParam = url.searchParams.get("game_ids");
-    const gameIds = (gameIdsParam ?? "")
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
+    const marketParam = url.searchParams.get("market_key");
+    const game_id = url.searchParams.get("game_id");
+    const keys = wantedKeys(marketParam);
 
-    const { startISO, endISO } = todayETWindow();
-
-    // First, get today's games
-    const gq = supabase
-      .from("games")
-      .select("game_id, commence_time, home_team, away_team")
-      .gte("commence_time", startISO)
-      .lte("commence_time", endISO);
-
-    const { data: games, error: gErr } = await gq;
-    if (gErr) return NextResponse.json({ ok: false, error: gErr.message }, { status: 500 });
-
-    const todaysIds = new Set((games ?? []).map((g: any) => String(g.game_id)));
-
-    // Use only valid today game_ids (if client sent any)
-    const activeIds =
-      gameIds.length > 0 ? gameIds.filter((id) => todaysIds.has(id)) : Array.from(todaysIds);
-
-    if (activeIds.length === 0) {
-      return NextResponse.json({ ok: true, players: [] }, { status: 200 });
+    const playerId = params.playerId;
+    if (!playerId) {
+      return NextResponse.json({ ok: false, error: "playerId required" }, { status: 400 });
     }
 
-    // Pull participants for those games
-    const { data: parts, error: pErr } = await supabase
-      .from("game_participants")
-      .select("game_id, player_id, team_abbr, players(full_name)")
-      .in("game_id", activeIds);
+    let q = supabase
+      .from("odds_history")
+      .select("captured_at, american_odds, bookmaker, player_id, game_id, market_key")
+      .eq("player_id", playerId)
+      .in("market_key", keys)
+      .order("captured_at", { ascending: true });
 
-    if (pErr) return NextResponse.json({ ok: false, error: pErr.message }, { status: 500 });
+    if (game_id) q = q.eq("game_id", game_id);
 
-    // Deduplicate by (player_id, game_id)
-    const seen = new Set<string>();
-    const players = [];
-    for (const r of parts ?? []) {
-      const pid = String(r.player_id);
-      const gid = String(r.game_id);
-      const key = `${pid}|${gid}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      players.push({
-        player_id: pid,
-        full_name: r.players?.full_name ?? pid,
-        team_abbr: r.team_abbr ?? null,
-        game_id: gid, // IMPORTANT: tie each player to the game they belong to
-      });
+    const { data, error } = await q;
+    if (error) {
+      return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
     }
 
-    // Sort players by name for UX
-    players.sort((a, b) => a.full_name.localeCompare(b.full_name));
+    const rows =
+      (data ?? [])
+        .map((r: AnyRow) => {
+          const b = normBook(String(r.bookmaker ?? ""));
+          if (!b) return null;
+          const ao = Number(r.american_odds);
+          const ts = Date.parse(String(r.captured_at));
+          if (!Number.isFinite(ao) || !Number.isFinite(ts)) return null;
+          return {
+            captured_at: new Date(ts).toISOString(),
+            american_odds: ao,
+            bookmaker: b as "fanduel" | "betmgm",
+          };
+        })
+        .filter(Boolean) ?? [];
 
-    return NextResponse.json({ ok: true, players }, { status: 200 });
+    return NextResponse.json({ ok: true, data: rows }, { status: 200 });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: String(e?.message ?? e) }, { status: 500 });
   }
