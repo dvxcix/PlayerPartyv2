@@ -1,4 +1,4 @@
-// app/api/players/[playerId]/odds/route.ts
+// app/api/players/route.ts
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
@@ -7,65 +7,55 @@ const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE!;
 
 type AnyRow = Record<string, any>;
 
-function wantedKeys(input: string | null): string[] {
-  const s = (input ?? "").toLowerCase();
-  if (s === "batter_first_home_run" || s === "first_home_run" || s === "batter_first_home_runs") {
-    return ["batter_first_home_run"];
-  }
-  return ["batter_home_run", "batter_home_runs", "player_home_run"];
+function parseGameIdsFromUrl(urlStr: string): string[] {
+  const url = new URL(urlStr);
+  const q = url.searchParams.get("game_ids") || "";
+  return q
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
-function normBook(b: string): "fanduel" | "betmgm" | null {
-  const s = (b || "").toLowerCase().replace(/[\s_-]+/g, "");
-  if (s === "fanduel" || s === "fd") return "fanduel";
-  if (s === "betmgm" || s === "mgm") return "betmgm";
-  return null;
-}
-
-export async function GET(req: Request, { params }: { params: { playerId: string } }) {
+export async function GET(req: Request) {
   try {
-    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
-      return NextResponse.json({ ok: false, error: "Supabase env not set" }, { status: 500 });
-    }
-
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
+    const gameIds = parseGameIdsFromUrl(req.url);
 
-    const url = new URL(req.url);
-    const marketParam = url.searchParams.get("market_key");
-    const game_id = url.searchParams.get("game_id");
-    const keys = wantedKeys(marketParam);
-
-    const playerId = params.playerId;
-    if (!playerId) {
-      return NextResponse.json({ ok: false, error: "playerId required" }, { status: 400 });
+    if (!gameIds.length) {
+      // You can decide to either error, or return empty.
+      // Returning empty keeps the UI simple.
+      return NextResponse.json({ ok: true, data: [] }, { status: 200 });
     }
 
-    let q = supabase
-      .from("odds_history")
-      .select("captured_at, american_odds, bookmaker, player_id, game_id, market_key")
-      .eq("player_id", playerId)
-      .in("market_key", keys)
-      .order("captured_at", { ascending: true });
+    // Pull participants for those games with the player full_name via FK/relationship.
+    // Table shapes you shared:
+    // - game_participants: game_id, player_id, team_abbr
+    // - players: player_id, full_name, ...
+    const { data, error } = await supabase
+      .from("game_participants")
+      .select("game_id, player_id, team_abbr, players(full_name)")
+      .in("game_id", gameIds);
 
-    if (game_id) q = q.eq("game_id", game_id);
-
-    const { data, error } = await q;
     if (error) {
       return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
     }
 
+    // Deduplicate by (game_id, player_id)
+    const seen = new Set<string>();
     const rows =
       (data ?? [])
         .map((r: AnyRow) => {
-          const b = normBook(String(r.bookmaker ?? ""));
-          if (!b) return null;
-          const ao = Number(r.american_odds);
-          const ts = Date.parse(String(r.captured_at));
-          if (!Number.isFinite(ao) || !Number.isFinite(ts)) return null;
+          const gid = String(r.game_id ?? "");
+          const pid = String(r.player_id ?? "");
+          const key = `${gid}|${pid}`;
+          if (seen.has(key)) return null;
+          seen.add(key);
+
           return {
-            captured_at: new Date(ts).toISOString(),
-            american_odds: ao,
-            bookmaker: b as "fanduel" | "betmgm",
+            player_id: pid,
+            full_name: (r.players && r.players[0]?.full_name) || r.players?.full_name || pid,
+            team_abbr: r.team_abbr ?? null,
+            game_id: gid,
           };
         })
         .filter(Boolean) ?? [];
