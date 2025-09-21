@@ -1,10 +1,9 @@
 // lib/types.ts
 export type Game = {
-  id: string;
   game_id: string;
-  home_team_abbr: string;
-  away_team_abbr: string;
   commence_time: string; // ISO
+  home_team: string | null; // teams.abbr (FK)
+  away_team: string | null; // teams.abbr (FK)
 };
 
 export type ApiGame = Game;
