@@ -33,10 +33,11 @@ export default function DashboardPage() {
         if (!json.ok) throw new Error(json.error || "Unknown error");
         if (!Array.isArray(json.data)) throw new Error("No games array in response");
 
-        const rows = (json.data ?? []).map((g) => ({
-          ...g,
-          home_team_abbr: String(g.home_team_abbr || "").toUpperCase(),
-          away_team_abbr: String(g.away_team_abbr || "").toUpperCase(),
+        const rows: Game[] = (json.data ?? []).map((g) => ({
+          game_id: g.game_id,
+          commence_time: g.commence_time,
+          home_team: (g.home_team ?? "").toUpperCase(),
+          away_team: (g.away_team ?? "").toUpperCase(),
         }));
         if (!cancelled) setGames(rows);
       } catch (e: any) {
@@ -49,14 +50,13 @@ export default function DashboardPage() {
     };
   }, []);
 
-  // Ensure player selections remain valid if user unselects a game
+  // Keep player selections valid when games are toggled
   const filteredPlayers = useMemo(() => {
     if (!selectedGameIds.length) return selectedPlayers;
     return selectedPlayers.filter((p) => selectedGameIds.includes(p.game_id));
   }, [selectedPlayers, selectedGameIds]);
 
   useEffect(() => {
-    // If some players are no longer in the selected games, drop them
     if (filteredPlayers.length !== selectedPlayers.length) {
       setSelectedPlayers(filteredPlayers);
     }
@@ -97,11 +97,7 @@ export default function DashboardPage() {
               </div>
             ) : (
               <div className="p-0">
-                <MultiGamePicker
-                  games={games}
-                  value={selectedGameIds}
-                  onChange={setSelectedGameIds}
-                />
+                <MultiGamePicker games={games} value={selectedGameIds} onChange={setSelectedGameIds} />
               </div>
             )}
           </div>
