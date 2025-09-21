@@ -1,6 +1,9 @@
 // components/HeadshotImg.tsx
 "use client";
 
+import Image from "next/image";
+import { useMemo } from "react";
+
 type Props = {
   fullName: string;
   className?: string;
@@ -8,35 +11,36 @@ type Props = {
   height?: number;
 };
 
-/**
- * Lightweight headshot helper:
- * - Looks for /public/headshots2/<slug>.png (you already have these)
- * - Falls back to /miscimg/_default.avif on error
- */
-export default function HeadshotImg({
-  fullName,
-  className,
-  width = 24,
-  height = 24,
-}: Props) {
-  const slug = fullName
+function slugifyName(n: string) {
+  return (n || "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
-    .replace(/(^-|-$)/g, "");
+    .replace(/(^-|-$)+/g, "");
+}
 
-  const src = `/headshots2/${slug}.png`;
+export default function HeadshotImg({ fullName, className, width = 28, height = 28 }: Props) {
+  const nameSlug = useMemo(() => slugifyName(fullName), [fullName]);
 
+  // Try headshots2 → headshots → default avatar
+  const candidates = [
+    `/headshots2/${nameSlug}.png`,
+    `/headshots2/${nameSlug}.jpg`,
+    `/headshots/${nameSlug}.png`,
+    `/headshots/${nameSlug}.jpg`,
+    `/_default.avif`,
+  ];
+
+  // Let <Image> attempt the first; if it 404s, it’ll still render nicely (we don’t have onError here).
   return (
-    // Using <img> to keep it simple and avoid Image domain/config issues
-    <img
-      src={src}
+    <Image
       alt={fullName}
+      src={candidates[0]}
+      onError={(e: any) => {
+        if (e?.currentTarget) e.currentTarget.src = candidates[1] ?? candidates[2] ?? candidates[3] ?? candidates[4];
+      }}
       className={className}
       width={width}
       height={height}
-      onError={(e) => {
-        (e.currentTarget as HTMLImageElement).src = "/miscimg/_default.avif";
-      }}
     />
   );
 }
