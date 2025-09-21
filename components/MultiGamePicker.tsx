@@ -5,34 +5,35 @@ import Image from "next/image";
 import { useMemo } from "react";
 
 export type Game = {
-  // Your API returns game_id; some older code referenced id.
+  // Sometimes you only have game_id; keep id optional so either works.
   id?: string;
   game_id: string;
   commence_time: string; // ISO
-  home_team_abbr: string; // e.g. "det" | "DET"
-  away_team_abbr: string; // e.g. "atl" | "ATL"
+  // These can be missing/nullable from your API; make them optional.
+  home_team_abbr?: string;
+  away_team_abbr?: string;
   status?: string | null;
 };
 
 type Props = {
   games: Game[];
-  value: string[]; // array of selected game_ids
+  value: string[]; // selected game_ids
   onChange: (next: string[]) => void;
 };
 
-function teamLogoSrc(abbr: string) {
-  // logos live in /public/logos and are lowercase in your repo
-  const a = (abbr || "").toLowerCase();
-  return `/logos/${a}.png`;
+function teamLogoSrc(abbr?: string) {
+  // fallback: blank/placeholder if missing
+  const a = (abbr ?? "").toLowerCase();
+  return a ? `/logos/${a}.png` : "/logos/_blank.png";
+}
+
+function safeAbbr(s?: string) {
+  return (s ?? "").toUpperCase();
 }
 
 export default function MultiGamePicker({ games, value, onChange }: Props) {
   const sorted = useMemo(() => {
-    // Defensive: filter out anything missing essential fields
-    const safe = (games ?? []).filter(
-      (g) => (g.id || g.game_id) && g.commence_time && g.home_team_abbr && g.away_team_abbr
-    );
-    // sort by commence_time asc, then by game_id for stability
+    const safe = (games ?? []).filter((g) => (g.id || g.game_id) && g.commence_time);
     return safe.slice().sort((a, b) => {
       const ta = Date.parse(a.commence_time);
       const tb = Date.parse(b.commence_time);
@@ -51,7 +52,7 @@ export default function MultiGamePicker({ games, value, onChange }: Props) {
 
   if (!sorted.length) {
     return <div className="text-sm text-gray-500">No games found.</div>;
-  }
+    }
 
   return (
     <div className="grid gap-2">
@@ -59,14 +60,14 @@ export default function MultiGamePicker({ games, value, onChange }: Props) {
         const gid = String(g.id ?? g.game_id);
         const sel = value.includes(gid);
 
-        const homeAbbr = (g.home_team_abbr || "").toUpperCase();
-        const awayAbbr = (g.away_team_abbr || "").toUpperCase();
+        const homeAbbr = safeAbbr(g.home_team_abbr);
+        const awayAbbr = safeAbbr(g.away_team_abbr);
 
         const start = new Date(g.commence_time);
-        const timeStr = start.toLocaleTimeString(undefined, {
-          hour: "numeric",
-          minute: "2-digit",
-        });
+        const timeStr = isNaN(start.getTime())
+          ? ""
+          : start.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+        const dateStr = isNaN(start.getTime()) ? "" : start.toLocaleDateString();
 
         return (
           <button
@@ -80,14 +81,14 @@ export default function MultiGamePicker({ games, value, onChange }: Props) {
               <div className="flex -space-x-1">
                 <Image
                   src={teamLogoSrc(homeAbbr)}
-                  alt={homeAbbr}
+                  alt={homeAbbr || "HOME"}
                   width={24}
                   height={24}
                   className="rounded-full border"
                 />
                 <Image
                   src={teamLogoSrc(awayAbbr)}
-                  alt={awayAbbr}
+                  alt={awayAbbr || "AWAY"}
                   width={24}
                   height={24}
                   className="rounded-full border"
@@ -95,10 +96,10 @@ export default function MultiGamePicker({ games, value, onChange }: Props) {
               </div>
               <div>
                 <div className="text-sm font-medium">
-                  {awayAbbr} @ {homeAbbr}
+                  {(awayAbbr || "AWAY")} @ {(homeAbbr || "HOME")}
                 </div>
                 <div className="text-xs text-gray-500">
-                  {timeStr} • {start.toLocaleDateString()}
+                  {timeStr && dateStr ? `${timeStr} • ${dateStr}` : ""}
                 </div>
               </div>
             </div>
