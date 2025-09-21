@@ -11,21 +11,20 @@ export type PlayerItem = {
   game_id: string;
 };
 
-type Props = {
-  games: Array<{
-    id?: string;
-    game_id: string;
-    commence_time: string;
-    home_team_abbr?: string;
-    away_team_abbr?: string;
-    status?: string | null;
-  }>;
-  selectedGameIds: string[];
-  value: { player_id: string; full_name: string }[];
-  onChange: (next: { player_id: string; full_name: string }[]) => void;
+// Must match your page's PlayerPick shape
+export type PlayerPick = {
+  player_id: string;
+  full_name: string;
+  game_id: string;
 };
 
-export default function PlayersPanel({ games, selectedGameIds, value, onChange }: Props) {
+type Props = {
+  selectedGameIds: string[];
+  value: PlayerPick[];
+  onChange: (next: PlayerPick[]) => void;
+};
+
+export default function PlayersPanel({ selectedGameIds, value, onChange }: Props) {
   const [players, setPlayers] = useState<PlayerItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -75,18 +74,25 @@ export default function PlayersPanel({ games, selectedGameIds, value, onChange }
     return players.filter((p) => p.full_name.toLowerCase().includes(q));
   }, [players, query]);
 
-  function toggle(p: { player_id: string; full_name: string }) {
-    const exists = value.some((v) => v.player_id === p.player_id);
-    if (exists) onChange(value.filter((v) => v.player_id !== p.player_id));
-    else onChange([...value, p]);
+  function isSelected(p: PlayerItem) {
+    return value.some((v) => v.player_id === p.player_id && v.game_id === p.game_id);
+  }
+
+  function toggle(p: PlayerItem) {
+    const exists = isSelected(p);
+    if (exists) {
+      onChange(value.filter((v) => !(v.player_id === p.player_id && v.game_id === p.game_id)));
+    } else {
+      onChange([...value, { player_id: p.player_id, full_name: p.full_name, game_id: p.game_id }]);
+    }
   }
 
   function selectAllVisible() {
-    const as = filtered.map((p) => ({ player_id: p.player_id, full_name: p.full_name }));
-    // Merge without duplicating
+    // Merge without duplicating (keyed by player_id+game_id)
     const merged = [...value];
-    for (const a of as) {
-      if (!merged.some((v) => v.player_id === a.player_id)) merged.push(a);
+    for (const p of filtered) {
+      const exists = merged.some((v) => v.player_id === p.player_id && v.game_id === p.game_id);
+      if (!exists) merged.push({ player_id: p.player_id, full_name: p.full_name, game_id: p.game_id });
     }
     onChange(merged);
   }
@@ -134,11 +140,11 @@ export default function PlayersPanel({ games, selectedGameIds, value, onChange }
           ) : (
             <ul className="divide-y">
               {filtered.map((p) => {
-                const sel = value.some((v) => v.player_id === p.player_id);
+                const sel = isSelected(p);
                 return (
                   <li key={`${p.game_id}|${p.player_id}`}>
                     <button
-                      onClick={() => toggle({ player_id: p.player_id, full_name: p.full_name })}
+                      onClick={() => toggle(p)}
                       className={`w-full flex items-center gap-3 px-2 py-2 text-left ${
                         sel ? "bg-blue-50" : "hover:bg-gray-50"
                       }`}
