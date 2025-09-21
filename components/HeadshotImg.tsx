@@ -2,28 +2,28 @@
 "use client";
 
 import Image from "next/image";
+import { headshotSrcFor } from "@/lib/headshots";
 
 export default function HeadshotImg({
-  name,
+  fullName,
   className,
-  src,
 }: {
-  name: string;
+  fullName: string;
   className?: string;
-  src?: string;
 }) {
-  // If you already resolved ID→file elsewhere, pass `src`.
-  // Otherwise we default to /_default.avif
-  const safeSrc = src ?? "/_default.avif";
+  const src = headshotSrcFor(fullName);
   return (
     <Image
-      src={safeSrc}
-      alt={name}
-      width={32}
-      height={32}
+      src={src}
+      alt={fullName}
+      width={40}
+      height={40}
       className={className}
       onError={(e) => {
-        (e.currentTarget as HTMLImageElement).src = "/_default.avif";
+        const img = e.target as HTMLImageElement;
+        if (!img?.src?.includes("_default.avif")) {
+          img.src = "/_default.avif";
+        }
       }}
     />
   );
