@@ -15,6 +15,7 @@ export default function TeamLogo({
       height={size}
       className={`inline-block align-middle ${className}`}
       onError={(e) => {
+        // @ts-ignore: next/image forwards to underlying HTMLImageElement at runtime
         (e.target as HTMLImageElement).src = "/logos/_default.png";
       }}
     />
