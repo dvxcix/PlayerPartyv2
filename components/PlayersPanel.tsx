@@ -4,109 +4,105 @@
 import { useEffect, useMemo, useState } from "react";
 import HeadshotImg from "@/components/HeadshotImg";
 
-export type PlayerMin = { player_id: string; full_name: string };
+export type PlayerPick = {
+  player_id: string;
+  full_name: string;
+  game_id: string;     // tie selection to a specific game
+  team_abbr?: string | null;
+};
 
-export default function PlayersPanel({
-  selectedGameIds,
-  value,
-  onChange,
-}: {
+type Props = {
   selectedGameIds: string[];
-  value: PlayerMin[];
-  onChange: (players: PlayerMin[]) => void;
-}) {
+  value: PlayerPick[];
+  onChange: (picks: PlayerPick[]) => void;
+};
+
+type ApiPlayer = {
+  player_id: string;
+  full_name: string;
+  team_abbr?: string | null;
+  game_id: string;
+};
+
+export default function PlayersPanel({ selectedGameIds, value, onChange }: Props) {
   const [loading, setLoading] = useState(false);
-  const [players, setPlayers] = useState<PlayerMin[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+  const [rows, setRows] = useState<ApiPlayer[]>([]);
   const [q, setQ] = useState("");
 
   useEffect(() => {
-    let stop = false;
     (async () => {
       try {
         setLoading(true);
-        const qs =
-          selectedGameIds.length > 0
-            ? `?game_ids=${encodeURIComponent(selectedGameIds.join(","))}`
-            : "";
-        const res = await fetch(`/api/players${qs}`, { cache: "no-store" });
+        setErr(null);
+        const params = new URLSearchParams();
+        if (selectedGameIds.length) params.set("game_ids", selectedGameIds.join(","));
+        const res = await fetch(`/api/players?${params.toString()}`, { cache: "no-store" });
         const json = await res.json();
-        if (!stop) {
-          if (json?.ok && Array.isArray(json.data)) setPlayers(json.data);
-          else setPlayers([]);
-        }
+        if (!json?.ok) throw new Error(json?.error || "Players fetch failed");
+        setRows(json.players ?? []);
+      } catch (e: any) {
+        setErr(e?.message ?? String(e));
+        setRows([]);
       } finally {
-        if (!stop) setLoading(false);
+        setLoading(false);
       }
     })();
-    return () => {
-      stop = true;
-    };
-  }, [selectedGameIds]);
+  }, [selectedGameIds.join(",")]);
 
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
-    if (!s) return players;
-    return players.filter((p) => p.full_name.toLowerCase().includes(s));
-  }, [players, q]);
+    if (!s) return rows;
+    return rows.filter((r) => r.full_name.toLowerCase().includes(s));
+  }, [rows, q]);
 
-  function toggle(p: PlayerMin) {
-    const exists = value.some((x) => x.player_id === p.player_id);
-    if (exists) onChange(value.filter((x) => x.player_id !== p.player_id));
-    else onChange([...value, p]);
-  }
-
-  function selectAll() {
-    const ids = new Set(value.map((v) => v.player_id));
-    const merged = [...value, ...filtered.filter((p) => !ids.has(p.player_id))];
-    onChange(merged);
-  }
-
-  function clearAll() {
-    onChange(value.filter((v) => !filtered.some((p) => p.player_id === v.player_id)));
+  function toggle(p: ApiPlayer) {
+    const exists = value.find((v) => v.player_id === p.player_id && v.game_id === p.game_id);
+    if (exists) {
+      onChange(value.filter((v) => !(v.player_id === p.player_id && v.game_id === p.game_id)));
+    } else {
+      onChange([...value, { player_id: p.player_id, full_name: p.full_name, game_id: p.game_id, team_abbr: p.team_abbr }]);
+    }
   }
 
   return (
     <div className="space-y-2">
-      <div className="flex items-center gap-2">
-        <input
-          className="w-full border rounded-md px-2 py-1 text-sm"
-          placeholder="Search players…"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-        />
-        <button onClick={selectAll} className="text-xs border rounded-md px-2 py-1 bg-white hover:bg-gray-50">
-          Select all
-        </button>
-        <button onClick={clearAll} className="text-xs border rounded-md px-2 py-1 bg-white hover:bg-gray-50">
-          Clear
-        </button>
-      </div>
+      <input
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        placeholder="Search players…"
+        className="w-full border rounded-md px-3 py-2 text-sm"
+      />
 
-      <div className="max-h-80 overflow-auto pr-1">
-        <ul className="space-y-1">
-          {loading && <li className="text-sm text-gray-500">Loading…</li>}
-          {!loading && filtered.length === 0 && (
-            <li className="text-sm text-gray-500">No players match.</li>
-          )}
-          {!loading &&
-            filtered.map((p) => {
-              const selected = value.some((v) => v.player_id === p.player_id);
-              return (
-                <li key={p.player_id}>
-                  <button
-                    onClick={() => toggle(p)}
-                    className={`w-full flex items-center gap-2 border rounded-lg px-2 py-1.5 hover:bg-gray-50 ${
-                      selected ? "ring-2 ring-blue-300 bg-blue-50/40" : ""
-                    }`}
-                  >
-                    <HeadshotImg name={p.full_name} className="w-6 h-6 rounded-full" />
-                    <span className="text-sm">{p.full_name}</span>
-                  </button>
-                </li>
-              );
-            })}
-        </ul>
-      </div>
+      {loading ? (
+        <div className="text-xs text-gray-500">Loading players…</div>
+      ) : err ? (
+        <div className="text-xs text-red-600">Failed to load players: {err}</div>
+      ) : filtered.length === 0 ? (
+        <div className="text-xs text-gray-500">No players match.</div>
+      ) : (
+        <div className="max-h-80 overflow-auto divide-y">
+          {filtered.map((p) => {
+            const active = !!value.find((v) => v.player_id === p.player_id && v.game_id === p.game_id);
+            return (
+              <button
+                key={`${p.player_id}|${p.game_id}`}
+                onClick={() => toggle(p)}
+                className={`w-full flex items-center gap-3 px-2 py-2 text-left hover:bg-gray-50 ${
+                  active ? "bg-blue-50" : ""
+                }`}
+              >
+                <HeadshotImg fullName={p.full_name} className="w-8 h-8 rounded-full object-cover" />
+                <div className="flex-1">
+                  <div className="text-sm">{p.full_name}</div>
+                  <div className="text-[11px] text-gray-500">Game: {p.game_id}</div>
+                </div>
+                <div className="text-[11px] uppercase text-gray-400">{p.team_abbr ?? ""}</div>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
